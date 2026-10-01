@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Экономический Атлас: Матрица школ, мультиколлинеарность и генеалогия</title>
+  <meta name="description" content="Интерактивная матрица 34 экономических школ по 50 критериям. Анализ мультиколлинеарности (SVD), сквозное сравнение любых двух школ во всех срезах, генеалогическое древо преемственности и радарный анализ.">
+  
+  <!-- Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="theme-dark">
+  <div class="app-layout">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-logo">
+          <div class="logo-orb"></div>
+          <span class="logo-icon">Σ</span>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-title">EconMatrix <span class="badge-accent">v2.5 Dual-Comparator</span></h1>
+          <p class="brand-subtitle">Атлас 34 экономических школ × 50 критериев • SVD Мультиколлинеарность • Историческая генеалогия</p>
+        </div>
+      </div>
+
+      <div class="header-metrics">
+        <div class="metric-pill" title="Количество реальных исторических и современных школ">
+          <span class="metric-label">Школ</span>
+          <span class="metric-val" id="metric-schools-count">34</span>
+        </div>
+        <div class="metric-pill" title="Количество критериев (факторов) анализа">
+          <span class="metric-label">Критериев</span>
+          <span class="metric-val" id="metric-factors-count">50</span>
+        </div>
+        <div class="metric-pill" title="Исходное число обусловленности транспонированной матрицы">
+          <span class="metric-label">Cond(M<sup>T</sup>)</span>
+          <span class="metric-val metric-warning" id="metric-cond-orig">193.87</span>
+        </div>
+        <div class="metric-pill" title="Число обусловленности после фильтрации коллинеарных факторов">
+          <span class="metric-label">Cond Cleaned</span>
+          <span class="metric-val metric-success" id="metric-cond-final">169.99</span>
+        </div>
+        <div class="metric-pill" title="Удалено избыточных факторов жадным алгоритмом">
+          <span class="metric-label">Удалено факторов</span>
+          <span class="metric-val metric-highlight" id="metric-removed-count">10</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── GLOBAL COMPARISON BAR (Сквозной селектор двух школ) ──────── -->
+    <section class="global-compare-bar glass-card" id="global-compare-bar">
+      <div class="compare-bar-header">
+        <div class="compare-bar-title">
+          <span class="pulse-dot"></span>
+          <span>Сквозное сравнение двух школ во всех разделах (Dual Comparison Bar):</span>
+        </div>
+        <div class="quick-duels-wrap">
+          <span class="quick-duels-label">Быстрый выбор дуэлей:</span>
+          <button class="duel-btn" data-s1="marxism" data-s2="neo_marxism">Марксизм vs Неомарксизм</button>
+          <button class="duel-btn" data-s1="marxism" data-s2="austrian">Марксизм vs Австрийцы</button>
+          <button class="duel-btn" data-s1="original_keynesian" data-s2="chicago_monetarism">Кейнсианцы vs Монетаристы</button>
+          <button class="duel-btn" data-s1="mercantilism" data-s2="classical">Меркантилизм vs Классики</button>
+          <button class="duel-btn" data-s1="austrian" data-s2="anarcho_capitalism">Австрийцы vs АнКап</button>
+        </div>
+      </div>
+
+      <div class="compare-selectors-grid">
+        <div class="selector-card school-a-card">
+          <div class="selector-badge badge-school-a">Школа А (Базовая)</div>
+          <select class="control-select global-school-select" id="global-select-school-a"></select>
+        </div>
+
+        <button class="swap-schools-btn" id="btn-swap-schools" title="Поменять школы местами">⇄</button>
+
+        <div class="selector-card school-b-card">
+          <div class="selector-badge badge-school-b">Школа Б (Для сравнения)</div>
+          <select class="control-select global-school-select" id="global-select-school-b"></select>
+        </div>
+
+        <div class="comparison-relationship-card" id="global-relationship-card">
+          <div class="rel-header">
+            <span class="rel-label">Генеалогическая связь и сходство:</span>
+            <span class="rel-badge" id="global-rel-badge">Потомок</span>
+          </div>
+          <div class="rel-text" id="global-rel-desc">Загрузка взаимосвязи...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs" aria-label="Основные разделы">
+      <button class="nav-tab active" data-tab="heatmap" id="tab-btn-heatmap">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
+        <span>Матрица факторов</span>
+      </button>
+
+      <button class="nav-tab" data-tab="pca" id="tab-btn-pca">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path></svg>
+        <span>2D Карта идеологий (PCA/SVD)</span>
+      </button>
+
+      <button class="nav-tab" data-tab="compare" id="tab-btn-compare">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+        <span>Многоугольник сравнения (Радар)</span>
+      </button>
+
+      <button class="nav-tab" data-tab="genealogy" id="tab-btn-genealogy">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+        <span>Дерево происхождения (Генеалогия)</span>
+        <span class="badge-mini" style="background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald);">Преемственность</span>
+      </button>
+
+      <button class="nav-tab" data-tab="multicollinearity" id="tab-btn-multicollinearity">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+        <span>Анализ мультиколлинеарности</span>
+        <span class="badge-mini">Script</span>
+      </button>
+
+      <button class="nav-tab" data-tab="encyclopedia" id="tab-btn-encyclopedia">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+        <span>Сравнительное досье и Глоссарий</span>
+      </button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="app-main">
+      <!-- ── SECTION 1: HEATMAP ──────────────────────────────────────── -->
+      <section class="tab-pane active" id="pane-heatmap">
+        <div class="control-panel glass-card">
+          <div class="filter-group">
+            <label class="control-label" for="matrix-view-mode">Режим отображения матрицы:</label>
+            <div class="segmented-control" id="matrix-view-mode">
+              <button class="segment-btn active" data-mode="original" id="btn-view-original">Исходная (34×50)</button>
+              <button class="segment-btn" data-mode="comparison" id="btn-view-comparison" style="color: var(--accent-cyan); font-weight: 600;">⚡ Сравнение (А vs Б)</button>
+              <button class="segment-btn" data-mode="cleaned" id="btn-view-cleaned">Очищенная (34×40)</button>
+              <button class="segment-btn" data-mode="transposed" id="btn-view-transposed">Транспонированная (50×34)</button>
+            </div>
+            <div class="heatmap-cond-quickbar" id="heatmap-cond-quickbar">
+              <span class="quickbar-label">Порог Cond:</span>
+              <span class="badge-mini text-cyan" id="heatmap-quick-cond-badge">Cond ≤ 169.99</span>
+              <input type="range" id="heatmap-slider-cond" class="styled-range mini-range" min="169.99" max="193.87" step="0.1" value="169.99" title="Регулировать число обусловленности">
+              <span class="quickbar-dim" id="heatmap-quick-dim-badge">40 факторов</span>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <label class="control-label" for="category-filter">Блок критериев:</label>
+            <select class="control-select" id="category-filter">
+              <option value="all">Все 9 тематических блоков (50)</option>
+            </select>
+          </div>
+
+          <div class="filter-group flex-grow">
+            <label class="control-label" for="search-input">Поиск по школам или факторам:</label>
+            <div class="search-box">
+              <input type="text" id="search-input" class="control-input" placeholder="Введите название критерия или школы...">
+              <button class="clear-search-btn" id="btn-clear-search" title="Очистить поиск">×</button>
+            </div>
+          </div>
+
+          <div class="color-legend-box">
+            <div class="legend-scale">
+              <span class="legend-label">-1.0 (Отрицание)</span>
+              <div class="legend-gradient"></div>
+              <span class="legend-label">+1.0 (Приоритет)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Heatmap Container -->
+        <div class="matrix-card glass-card">
+          <div class="matrix-scroll-wrapper" id="heatmap-scroll-container">
+            <div class="matrix-table-container" id="matrix-table-container">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── SECTION 2: PCA / IDEOLOGY MAP ──────────────────────────── -->
+      <section class="tab-pane" id="pane-pca">
+        <div class="pca-layout">
+          <div class="pca-canvas-card glass-card">
+            <div class="card-header">
+              <div class="header-left">
+                <h2 class="card-title">Главные компоненты пространства экономической мысли</h2>
+                <p class="card-desc">Проекция школ на плоскость первых двух главных компонент (SVD). Школы А и Б соединены вектором расстояния.</p>
+              </div>
+              <div class="header-actions">
+                <label class="toggle-control">
+                  <input type="checkbox" id="toggle-pca-vectors" checked>
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-text">Векторы факторов (Biplot)</span>
+                </label>
+                <button class="btn-secondary" id="btn-reset-pca-zoom">Сбросить зум</button>
+              </div>
+            </div>
+
+            <div class="canvas-viewport-wrapper">
+              <canvas id="pca-canvas" width="950" height="620"></canvas>
+              <div class="canvas-axis-hud">
+                <div class="axis-hud-x-left">← Государство / Социализация / Регулирование (PC1 -)</div>
+                <div class="axis-hud-x-right">Свободный рынок / Laissez-faire / Капитал (PC1 +) →</div>
+                <div class="axis-hud-y-top">↑ Гетеродоксия / Институты / Психология (PC2 +)</div>
+                <div class="axis-hud-y-bottom">↓ Неоклассическая ортодоксия / Формализм (PC2 -)</div>
+              </div>
+            </div>
+
+            <div class="pca-stats-footer">
+              <div class="stat-badge">
+                <span class="stat-name">Дисперсия PC1:</span>
+                <span class="stat-value" id="pca-var-pc1">42.3%</span>
+              </div>
+              <div class="stat-badge">
+                <span class="stat-name">Дисперсия PC2:</span>
+                <span class="stat-value" id="pca-var-pc2">14.8%</span>
+              </div>
+              <div class="stat-badge">
+                <span class="stat-name">Дистанция между А и Б:</span>
+                <span class="stat-value" id="pca-dist-ab" style="color: var(--accent-cyan);">-</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- School Inspector Sidebar -->
+          <div class="school-inspector-card glass-card" id="pca-school-inspector">
+            <div class="inspector-empty hidden" id="inspector-placeholder">
+              <div class="empty-icon">🎯</div>
+              <h3>Выберите школу на карте</h3>
+            </div>
+            <div class="inspector-content" id="inspector-details">
+              <!-- Rendered via JS: Dual comparative cards -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── SECTION 3: MULTI-ANGULAR RADAR (Сравнение по многоугольнику) ── -->
+      <section class="tab-pane" id="pane-compare">
+        <div class="compare-layout">
+          <div class="compare-controls glass-card">
+            <div class="radar-header-summary">
+              <div>
+                <h2 class="card-title">Многоугольник сравнения (9-осевой радар взглядов)</h2>
+                <p class="card-desc">Сопоставление усредненных профилей Школы А (циан) и Школы Б (красный) по ключевым сферам экономической теории.</p>
+              </div>
+              <div class="similarity-score-bar" id="similarity-gauge-container">
+                <!-- Rendered via JS -->
+              </div>
+            </div>
+          </div>
+
+          <div class="compare-body-grid">
+            <div class="radar-card glass-card">
+              <div class="card-header">
+                <h3 class="card-title">Профиль по 9 агрегированным блокам критериев</h3>
+                <p class="card-desc">Каждая ось отражает нормализованную позицию учения в диапазоне [-1.0, +1.0]</p>
+              </div>
+              <div class="radar-viewport">
+                <canvas id="radar-canvas" width="540" height="420"></canvas>
+              </div>
+            </div>
+
+            <div class="differences-card glass-card">
+              <div class="card-header">
+                <h3 class="card-title">Наибольшие расхождения во взглядах (Топ-контрасты)</h3>
+                <p class="card-desc">Критерии, по которым позиции Школы А и Школы Б диаметрально противоположны</p>
+              </div>
+              <div class="diff-list-container scrollable-y" id="diff-factors-list">
+                <!-- Rendered via JS -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── SECTION 4: GENEALOGY TREE (Дерево происхождения) ──────── -->
+      <section class="tab-pane" id="pane-genealogy">
+        <div class="genealogy-card glass-card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Генеалогическое древо экономических учений (Линии преемственности)</h2>
+              <p class="card-desc">
+                Историческая генеалогия: стрелки показывают преемственность (<strong>Предок → Потомок</strong>). 
+                Соседние вершины одного уровня — <strong>параллельные взгляды одной эпохи</strong>. 
+                Пунктирные узлы — <strong>исторические развилки/проблемы</strong>.
+              </p>
+            </div>
+            <div class="tree-controls-group">
+              <button class="btn-secondary" id="btn-focus-tree-ab">🎯 Сфокусировать путь Школа А ↔ Школа Б</button>
+              <button class="btn-secondary" id="btn-reset-tree-zoom">Сбросить масштаб</button>
+            </div>
+          </div>
+
+          <!-- Tree Relationship Banner -->
+          <div class="genealogy-path-banner" id="genealogy-path-banner">
+            <!-- Dynamic path explanation -->
+          </div>
+
+          <div class="genealogy-viewport-wrapper" id="genealogy-viewport-wrapper">
+            <svg id="genealogy-svg" width="1380" height="1020"></svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── SECTION 5: MULTICOLLINEARITY ANALYSIS ───────────────────── -->
+      <section class="tab-pane" id="pane-multicollinearity">
+        <div class="multicollinearity-grid">
+          <!-- Summary Banner -->
+          <div class="analysis-hero-card glass-card">
+            <div class="hero-content">
+              <div class="hero-tag">Алгоритм greedy row elimination • multicollinearity.py</div>
+              <h2 class="hero-title">Результаты анализа мультиколлинеарности транспонированной матрицы</h2>
+              <p class="hero-desc">
+                Матрица была транспонирована: <strong>50 строк (критерии) × 34 столбца (школы)</strong>. 
+                Поскольку число строк $m=50 \ge n=34$, скрипт произвел жадный перебор и последовательно исключал 
+                наиболее мультиколлинеарные (избыточные) критерии, снижая число обусловленности с <strong>193.87</strong> до <strong>169.99</strong>.
+              </p>
+            </div>
+
+            <div class="hero-stats">
+              <div class="hero-stat-card">
+                <span class="stat-caption">Исходный Cond</span>
+                <span class="stat-num text-amber" id="hero-stat-orig-cond">193.87</span>
+                <span class="stat-sub">50 факторов</span>
+              </div>
+              <div class="hero-stat-card">
+                <span class="stat-caption">Итоговый Cond</span>
+                <span class="stat-num text-emerald" id="hero-stat-final-cond">169.99</span>
+                <span class="stat-sub" id="hero-stat-sub-steps">Шаг 10 из 10</span>
+              </div>
+              <div class="hero-stat-card">
+                <span class="stat-caption">Удалено факторов</span>
+                <span class="stat-num text-cyan" id="hero-stat-removed-count">10 / 50</span>
+                <span class="stat-sub" id="hero-stat-sub-remaining">Осталось 40 факторов</span>
+              </div>
+              <div class="hero-stat-card">
+                <span class="stat-caption">Суммарный Δ Cond</span>
+                <span class="stat-num text-purple" id="hero-stat-delta-cond">23.88</span>
+                <span class="stat-sub" id="hero-stat-sub-pct">Снижение: -12.3%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive Condition Number Controller Card -->
+          <div class="cond-controller-card glass-card">
+            <div class="cond-header-row">
+              <div class="cond-title-block">
+                <div class="cond-badge-tag">
+                  <span class="pulse-dot"></span>
+                  <span>Интерактивный регулятор обусловленности матрицы</span>
+                </div>
+                <h3 class="cond-title">Выбор целевого числа обусловленности (Target Condition Number)</h3>
+                <p class="cond-subtitle">
+                  Перемещайте ползунок, выбирайте готовый пресет или вводите точное число, чтобы мгновенно регулировать уровень фильтрации мультиколлинеарности. 
+                  Все графики, SVD-спектр, таблица исключений и очищенная матрица синхронно адаптируются в реальном времени.
+                </p>
+              </div>
+
+              <div class="cond-status-kpi">
+                <div class="kpi-mini">
+                  <span class="kpi-mini-label">Целевой порог Cond:</span>
+                  <span class="kpi-mini-val text-cyan font-mono" id="disp-target-cond">169.99</span>
+                </div>
+                <div class="kpi-mini">
+                  <span class="kpi-mini-label">Фактический Cond:</span>
+                  <span class="kpi-mini-val text-emerald font-mono" id="disp-actual-cond">169.99</span>
+                </div>
+                <div class="kpi-mini">
+                  <span class="kpi-mini-label">Исключено факторов:</span>
+                  <span class="kpi-mini-val text-amber font-mono" id="disp-removed-count">10 / 50</span>
+                </div>
+                <div class="kpi-mini">
+                  <span class="kpi-mini-label">Размерность матрицы:</span>
+                  <span class="kpi-mini-val text-purple font-mono" id="disp-matrix-dim">40 × 34</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Main Dual-Slider & Direct Input Controls -->
+            <div class="cond-controls-grid">
+              <!-- Left Control: Target Cond Slider & Direct Number Input -->
+              <div class="cond-input-group">
+                <div class="cond-label-row">
+                  <label for="slider-target-cond" class="cond-control-label">
+                    <span>🎯 Целевое число обусловленности (Target Cond):</span>
+                    <strong class="text-cyan font-mono" id="slider-cond-val">169.99</strong>
+                  </label>
+                  <div class="cond-direct-input-wrap">
+                    <span class="input-prefix">Cond ≤</span>
+                    <input type="number" id="input-direct-cond" class="control-input cond-number-input" min="10" max="250" step="0.1" value="169.99" title="Введите точное значение Cond">
+                    <button class="btn-primary btn-sm" id="btn-apply-direct-cond">Применить</button>
+                  </div>
+                </div>
+
+                <div class="range-slider-container">
+                  <input type="range" id="slider-target-cond" class="styled-range" min="169.99" max="193.87" step="0.1" value="169.99">
+                  <div class="slider-ticks">
+                    <span class="tick-label active" data-cond="169.99" title="Оптимум жадного поиска (10 факторов)">170.0 (Оптимум)</span>
+                    <span class="tick-label" data-cond="175.0" title="8 факторов удалено">175.0</span>
+                    <span class="tick-label" data-cond="180.0" title="6 факторов удалено">180.0</span>
+                    <span class="tick-label" data-cond="185.0" title="4 фактора удалено">185.0</span>
+                    <span class="tick-label" data-cond="190.0" title="2 фактора удалено">190.0</span>
+                    <span class="tick-label" data-cond="193.87" title="Исходная матрица без удалений">193.9 (Исходная)</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right Control: Elimination Steps Scrubber -->
+              <div class="cond-step-group">
+                <div class="cond-label-row">
+                  <label for="slider-steps-count" class="cond-control-label">
+                    <span>⚡ Шаги исключения факторов (Greedy Removals):</span>
+                    <strong class="text-amber font-mono" id="slider-steps-val">10 шагов</strong>
+                  </label>
+                  <span class="step-badge-counter text-muted" id="step-badge-summary">Останется 40 факторов</span>
+                </div>
+                <div class="range-slider-container">
+                  <input type="range" id="slider-steps-count" class="styled-range range-amber" min="0" max="10" step="1" value="10">
+                  <div class="slider-step-pills" id="step-pills-container">
+                    <!-- Step pills 0..10 rendered dynamically -->
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick Presets -->
+            <div class="cond-presets-row">
+              <span class="presets-title">Быстрый выбор уровня обусловленности:</span>
+              <button class="cond-preset-btn active" data-target="170.0" data-steps="10">🏆 Cond ≤ 170.0 (Оптимум, 10 факт.)</button>
+              <button class="cond-preset-btn" data-target="175.0" data-steps="8">Cond ≤ 175.0 (8 факт.)</button>
+              <button class="cond-preset-btn" data-target="180.0" data-steps="6">Cond ≤ 180.0 (6 факт.)</button>
+              <button class="cond-preset-btn" data-target="185.0" data-steps="4">Cond ≤ 185.0 (4 факт.)</button>
+              <button class="cond-preset-btn" data-target="190.0" data-steps="2">Cond ≤ 190.0 (2 факт.)</button>
+              <button class="cond-preset-btn" data-target="193.87" data-steps="0">Исходная матрица (193.87, 0 удалений)</button>
+              <button class="cond-preset-btn" data-target="100.0" data-steps="10" title="Порог 10^k при k=2">Порог 10² = 100 (k=2)</button>
+            </div>
+          </div>
+
+          <!-- Step-by-Step Table -->
+          <div class="table-card glass-card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Журнал пошагового удаления коллинеарных факторов (отсортировано по Δ)</h3>
+                <p class="card-desc">Факторы, исключение которых дало максимальное снижение числа обусловленности матрицы.</p>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="data-table" id="table-removal-history">
+                <thead>
+                  <tr>
+                    <th>Шаг</th>
+                    <th>Статус</th>
+                    <th>Индекс строки</th>
+                    <th>Критерий (Фактор)</th>
+                    <th>Категория</th>
+                    <th>Cond до</th>
+                    <th>Cond после</th>
+                    <th>Δ (Улучшение)</th>
+                    <th>Причина высокой коллинеарности</th>
+                  </tr>
+                </thead>
+                <tbody id="tbody-removal-history">
+                  <!-- Rendered via JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- SVD Singular Values Scree Plot & Top Correlations -->
+          <div class="dual-cards-row">
+            <div class="chart-card glass-card">
+              <div class="card-header">
+                <h3 class="card-title">Спектр сингулярных чисел матрицы (SVD)</h3>
+                <p class="card-desc">Сравнение исходной и отфильтрованной транспонированной матрицы</p>
+              </div>
+              <div class="chart-viewport">
+                <canvas id="svd-scree-canvas" width="480" height="260"></canvas>
+              </div>
+            </div>
+
+            <div class="correlations-card glass-card">
+              <div class="card-header">
+                <h3 class="card-title">Топ коррелирующих пар факторов (|r| ≥ 0.70)</h3>
+                <p class="card-desc">Пары критериев с наибольшей линейной взаимозависимостью</p>
+              </div>
+              <div class="table-responsive scrollable-y">
+                <table class="data-table compact-table" id="table-top-correlations">
+                  <thead>
+                    <tr>
+                      <th>Фактор 1</th>
+                      <th>Фактор 2</th>
+                      <th>Корреляция (r)</th>
+                      <th>Статус</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tbody-top-correlations">
+                    <!-- Rendered via JS -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── SECTION 6: ENCYCLOPEDIA & SIDE-BY-SIDE DOSSIER ─────────── -->
+      <section class="tab-pane" id="pane-encyclopedia">
+        <div class="encyclopedia-subnav">
+          <button class="subnav-btn active" id="btn-subnav-sidebyside">⚡ Сравнительное досье (Школа А vs Школа Б)</button>
+          <button class="subnav-btn" id="btn-subnav-schools">Все досье школ (34)</button>
+          <button class="subnav-btn" id="btn-subnav-factors">Глоссарий критериев (50)</button>
+        </div>
+
+        <!-- Comparative Dossier View -->
+        <div class="encyclopedia-view" id="view-encyclopedia-sidebyside">
+          <div class="sidebyside-dossier-grid" id="sidebyside-dossier-grid">
+            <!-- Rendered via JS -->
+          </div>
+        </div>
+
+        <!-- All Schools View -->
+        <div class="encyclopedia-view hidden" id="view-encyclopedia-schools">
+          <div class="search-bar-row">
+            <input type="text" id="encyclopedia-search-schools" class="control-input" placeholder="Поиск по мыслителям, периоду или названию школы...">
+          </div>
+          <div class="schools-cards-grid" id="schools-cards-grid">
+            <!-- Rendered via JS -->
+          </div>
+        </div>
+
+        <!-- All Factors View -->
+        <div class="encyclopedia-view hidden" id="view-encyclopedia-factors">
+          <div class="search-bar-row">
+            <input type="text" id="encyclopedia-search-factors" class="control-input" placeholder="Поиск по названию критерия или экономической категории...">
+          </div>
+          <div class="factors-cards-grid" id="factors-cards-grid">
+            <!-- Rendered via JS -->
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Global Floating Tooltip -->
+    <div class="floating-hud-tooltip hidden" id="floating-tooltip"></div>
+  </div>
+
+  <!-- Load Data and Scripts -->
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
