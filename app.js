@@ -99,7 +99,9 @@
     renderDifferences();
     renderSimilarityGauge();
     renderGenealogyTree();
-    renderSideBySideDossier();
+    if (typeof renderArena === 'function') {
+      renderArena();
+    }
   }
 
   function initGlobalComparisonBar() {
@@ -254,6 +256,35 @@
   /* ─────────────────────────────────────────────────────────────────────────
      1. ИНИЦИАЛИЗАЦИЯ И ВКЛАДКИ
   ───────────────────────────────────────────────────────────────────────── */
+  function updateContextualPanels(targetTab) {
+    if (!targetTab) {
+      const activeBtn = document.querySelector('.nav-tab.active');
+      targetTab = activeBtn ? activeBtn.getAttribute('data-tab') : 'compass';
+    }
+
+    const isV1 = document.body.classList.contains('mode-v1');
+    const dualSvdPanel = document.getElementById('dual-svd-panel');
+    const compareBar = document.getElementById('global-compare-bar');
+
+    // 1. Двойной SVD-индикатор: строго только там, где реально происходит сжатие (2D Карта и Матрица)
+    const svdRelevantTabs = ['pca', 'heatmap'];
+    if (dualSvdPanel) {
+      const shouldShowSvd = !isV1 && svdRelevantTabs.includes(targetTab);
+      dualSvdPanel.classList.toggle('contextual-hidden', !shouldShowSvd);
+    }
+
+    // 2. Сквозной бар выбора двух школ для сравнения:
+    // Показывается ТОЛЬКО там, где пользователь изучает конкретную пару школ:
+    // - genealogy (генеалогическая связь и общий предок в древе),
+    // - compare (радар 9 сфер в v1).
+    // На 2D Карте, в Сводной Матрице, SVD Лаборатории, Компасе и Арене он полностью скрыт.
+    const compareRelevantTabs = ['genealogy', 'compare'];
+    if (compareBar) {
+      const shouldShowCompare = compareRelevantTabs.includes(targetTab);
+      compareBar.classList.toggle('contextual-hidden', !shouldShowCompare);
+    }
+  }
+
   function initTabs() {
     const tabBtns = document.querySelectorAll('.nav-tab');
     const panes = document.querySelectorAll('.tab-pane');
@@ -269,12 +300,16 @@
         const activePane = document.getElementById(`pane-${targetTab}`);
         if (activePane) activePane.classList.add('active');
 
+        // Управление видимостью контекстных панелей (SVD индикатор и селектор сравнения)
+        updateContextualPanels(targetTab);
+
         // Триггер перерисовки холстов при активации вкладки
+        if (targetTab === 'compass') setTimeout(renderCompass, 40);
+        if (targetTab === 'arena') setTimeout(renderArena, 40);
         if (targetTab === 'pca') setTimeout(drawPcaCanvas, 40);
         if (targetTab === 'multicollinearity') setTimeout(drawSvdScreeCanvas, 40);
         if (targetTab === 'compare') setTimeout(renderRadar, 40);
         if (targetTab === 'genealogy') setTimeout(renderGenealogyTree, 40);
-        if (targetTab === 'encyclopedia') setTimeout(renderSideBySideDossier, 40);
       });
     });
 
@@ -284,6 +319,10 @@
       renderRadar();
       renderGenealogyTree();
     });
+
+    // Инициализация видимости панелей для активной вкладки
+    const initialActive = document.querySelector('.nav-tab.active')?.getAttribute('data-tab') || 'compass';
+    updateContextualPanels(initialActive);
   }
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -292,6 +331,7 @@
   let currentHeatmapMode = 'original'; // 'original' | 'comparison' | 'cleaned' | 'transposed'
   let currentCategoryFilter = 'all';
   let searchQuery = '';
+  let heatmapMergedDisplayMode = 'archive'; // 'archive' (внизу с пояснениями) | 'hide' (вырезать)
 
   function initHeatmapControls() {
     const modeBtns = document.querySelectorAll('#matrix-view-mode .segment-btn');
@@ -303,6 +343,20 @@
         renderHeatmap();
       });
     });
+
+    const btnToggleMerged = document.getElementById('btn-toggle-heatmap-merged');
+    const labelMergedMode = document.getElementById('label-heatmap-merged-mode');
+    if (btnToggleMerged) {
+      btnToggleMerged.addEventListener('click', () => {
+        heatmapMergedDisplayMode = (heatmapMergedDisplayMode === 'archive') ? 'hide' : 'archive';
+        if (labelMergedMode) {
+          labelMergedMode.textContent = (heatmapMergedDisplayMode === 'archive')
+            ? '📋 Слитые: внизу с пояснениями'
+            : '✂️ Слитые: вырезаны (чистый срез)';
+        }
+        renderHeatmap();
+      });
+    }
 
     const catSelect = document.getElementById('category-filter');
     CATEGORIES.forEach(cat => {
@@ -339,6 +393,8 @@
         applyConditionState(parseFloat(e.target.value), null, 'heatmap-slider');
       });
     }
+
+    initHeatmapDelegation();
   }
 
   // Расчет цвета ячейки от -1 до +1
@@ -374,8 +430,10 @@
     const schoolA = schools[sIdxA];
     const schoolB = schools[sIdxB];
 
-    // Определяем видимые факторы
-    let visibleFactorIndices = [];
+    // Определяем видимые факторы с учетом активных и слитых по SVD
+    const activeFactorIndices = [];
+    const mergedFactorIndices = [];
+
     factors.forEach((f, idx) => {
       if (currentHeatmapMode === 'cleaned' && removedIndicesSet.has(idx)) {
         return;
@@ -385,11 +443,20 @@
       }
       if (searchQuery) {
         const factorMatch = f.name_ru.toLowerCase().includes(searchQuery) || f.category.toLowerCase().includes(searchQuery);
-        if (factorMatch) visibleFactorIndices.push(idx);
-        return;
+        if (!factorMatch) return;
       }
-      visibleFactorIndices.push(idx);
+
+      const isMerged = !v2ActiveFactorIndices.includes(idx);
+      if (isMerged) {
+        mergedFactorIndices.push(idx);
+      } else {
+        activeFactorIndices.push(idx);
+      }
     });
+
+    const visibleFactorIndices = (heatmapMergedDisplayMode === 'hide') 
+      ? activeFactorIndices 
+      : [...activeFactorIndices, ...mergedFactorIndices];
 
     if (visibleFactorIndices.length === 0) {
       container.innerHTML = `<div style="padding: 40px; text-align: center; color: var(--text-secondary);">По запросу «${searchQuery}» ничего не найдено</div>`;
@@ -434,10 +501,11 @@
         const val = matrix[sIdxA][fIdx];
         const td = document.createElement('td');
         td.className = 'matrix-cell';
+        td.dataset.sidx = sIdxA;
+        td.dataset.fidx = fIdx;
         td.style.backgroundColor = getScoreColor(val);
         td.style.color = getTextColor(val);
         td.textContent = (val > 0 ? '+' : '') + val.toFixed(1);
-        attachTooltipEvents(td, sIdxA, fIdx, val);
         trA.appendChild(td);
       });
       tbody.appendChild(trA);
@@ -454,10 +522,11 @@
         const val = matrix[sIdxB][fIdx];
         const td = document.createElement('td');
         td.className = 'matrix-cell';
+        td.dataset.sidx = sIdxB;
+        td.dataset.fidx = fIdx;
         td.style.backgroundColor = getScoreColor(val);
         td.style.color = getTextColor(val);
         td.textContent = (val > 0 ? '+' : '') + val.toFixed(1);
-        attachTooltipEvents(td, sIdxB, fIdx, val);
         trB.appendChild(td);
       });
       tbody.appendChild(trB);
@@ -510,10 +579,10 @@
         const td = document.createElement('td');
         td.className = 'matrix-cell status-cell';
 
-        if (diff <= 0.3) {
+        if (diff <= 0.35) {
           td.style.color = 'var(--accent-emerald)';
           td.textContent = 'Согласие';
-        } else if (diff >= 1.5) {
+        } else if (diff >= 1.2) {
           td.style.color = 'var(--accent-crimson)';
           td.textContent = 'Антагонизм';
         } else {
@@ -528,152 +597,302 @@
 
     // ── РЕЖИМ 2: ТРАНСПОНИРОВАННАЯ МАТРИЦА ─────────────────────────────────
     } else if (currentHeatmapMode === 'transposed') {
+      const activeSchools = [];
+      const mergedSchools = [];
+      schools.forEach((s, sIdx) => {
+        if (!v2ActiveSchoolIndices.includes(sIdx)) {
+          mergedSchools.push({ s, sIdx });
+        } else {
+          activeSchools.push({ s, sIdx });
+        }
+      });
+      const visibleSchools = (heatmapMergedDisplayMode === 'hide') ? activeSchools : [...activeSchools, ...mergedSchools];
+
       const thead = document.createElement('thead');
       const headerRow = document.createElement('tr');
       
       const cornerTh = document.createElement('th');
       cornerTh.className = 'school-col-header';
-      cornerTh.textContent = 'Критерий / Фактор';
+      cornerTh.innerHTML = `<strong>Критерий / Фактор</strong><br><span style="font-size:10px; font-weight:normal; color:var(--text-muted);">${visibleSchools.length} школ</span>`;
       headerRow.appendChild(cornerTh);
 
-      schools.forEach((s, sIdx) => {
+      visibleSchools.forEach(({ s, sIdx }) => {
         const th = document.createElement('th');
         th.className = 'col-header-vertical';
+        const isMerged = !v2ActiveSchoolIndices.includes(sIdx);
+        if (isMerged) th.classList.add('merged-factor-header');
         if (s.id === schoolAId) th.style.color = 'var(--accent-cyan)';
         if (s.id === schoolBId) th.style.color = 'var(--accent-crimson)';
-        th.textContent = (s.id === schoolAId ? '🔵 ' : (s.id === schoolBId ? '🔴 ' : '')) + s.name_ru;
+        th.textContent = (s.id === schoolAId ? '🔵 ' : (s.id === schoolBId ? '🔴 ' : '')) + s.name_ru + (isMerged ? ' [Слита]' : '');
         headerRow.appendChild(th);
       });
       thead.appendChild(headerRow);
       table.appendChild(thead);
 
       const tbody = document.createElement('tbody');
-      visibleFactorIndices.forEach(fIdx => {
+
+      function renderTransposedRow(fIdx, isMerged) {
         const factor = factors[fIdx];
         const tr = document.createElement('tr');
-        const isRemoved = removedIndicesSet.has(fIdx);
+        if (isMerged) tr.className = 'merged-school-row';
 
         const rowTh = document.createElement('td');
         rowTh.className = 'school-row-header';
-        rowTh.innerHTML = `<span style="font-size: 10px; color: var(--text-muted); margin-right: 6px;">#${fIdx + 1}</span> ${factor.name_ru} ${isRemoved ? '<span style="color: var(--accent-crimson); font-size: 10px; margin-left: 4px;">[Удален]</span>' : ''}`;
+        rowTh.innerHTML = `<span style="font-size: 10px; color: var(--text-muted); margin-right: 6px;">#${fIdx + 1}</span> ${factor.name_ru} ${isMerged ? '<span class="badge-merged-partner">[Слит]</span>' : ''}`;
         tr.appendChild(rowTh);
 
-        schools.forEach((s, sIdx) => {
+        visibleSchools.forEach(({ s, sIdx }) => {
           const val = matrix[sIdx][fIdx];
           const td = document.createElement('td');
           td.className = 'matrix-cell';
-          if (isRemoved) td.classList.add('removed-factor-col');
+          td.dataset.sidx = sIdx;
+          td.dataset.fidx = fIdx;
+          if (isMerged) td.classList.add('merged-factor-cell');
           if (s.id === schoolAId) td.style.outline = '1px solid var(--accent-cyan)';
           if (s.id === schoolBId) td.style.outline = '1px solid var(--accent-crimson)';
           td.style.backgroundColor = getScoreColor(val);
           td.style.color = getTextColor(val);
           td.textContent = (val > 0 ? '+' : '') + val.toFixed(1);
-          attachTooltipEvents(td, sIdx, fIdx, val);
           tr.appendChild(td);
         });
 
         tbody.appendChild(tr);
+      }
+
+      // Активные факторы
+      activeFactorIndices.forEach(fIdx => {
+        renderTransposedRow(fIdx, false);
       });
+
+      // Слитые факторы внизу (если режим archive)
+      if (heatmapMergedDisplayMode === 'archive' && mergedFactorIndices.length > 0) {
+        const dividerTr = document.createElement('tr');
+        dividerTr.className = 'merged-section-divider';
+        const dividerTd = document.createElement('td');
+        dividerTd.colSpan = visibleSchools.length + 1;
+        dividerTd.innerHTML = `
+          <div class="merged-divider-content">
+            <span class="merged-divider-title">📋 Слитые критерии (${mergedFactorIndices.length}) — перемещены в архив</span>
+            <span class="merged-divider-hint">Исключены по мультиколлинеарности SVD</span>
+          </div>
+        `;
+        dividerTr.appendChild(dividerTd);
+        tbody.appendChild(dividerTr);
+
+        mergedFactorIndices.forEach(fIdx => {
+          renderTransposedRow(fIdx, true);
+        });
+      }
+
       table.appendChild(tbody);
 
     // ── РЕЖИМ 3: ПОЛНАЯ / ОЧИЩЕННАЯ МАТРИЦА ────────────────────────────────
     } else {
+      // 1. Разбиваем школы на активные и слитые
+      const activeSchools = [];
+      const mergedSchools = [];
+
+      schools.forEach((school, sIdx) => {
+        if (searchQuery) {
+          const schoolMatch = school.name_ru.toLowerCase().includes(searchQuery) ||
+                              school.name_en.toLowerCase().includes(searchQuery);
+          const anyFactorMatch = factors.some(f => (f.name_ru.toLowerCase().includes(searchQuery) || f.category.toLowerCase().includes(searchQuery)));
+          if (!schoolMatch && !anyFactorMatch) return;
+        }
+
+        const isMerged = !v2ActiveSchoolIndices.includes(sIdx);
+        if (isMerged) {
+          mergedSchools.push({ school, sIdx });
+        } else {
+          activeSchools.push({ school, sIdx });
+        }
+      });
+
       const thead = document.createElement('thead');
       const headerRow = document.createElement('tr');
 
       const cornerTh = document.createElement('th');
       cornerTh.className = 'school-col-header';
-      cornerTh.textContent = `Школа (34)`;
+      const shapeText = `${activeSchools.length} акт.` + 
+        (mergedSchools.length > 0 && heatmapMergedDisplayMode === 'archive' ? ` + ${mergedSchools.length} слит.` : '');
+      cornerTh.innerHTML = `<strong>Школы (${shapeText})</strong><br><span style="font-size:10px; font-weight:normal; color:var(--text-muted);">${visibleFactorIndices.length} критериев</span>`;
       headerRow.appendChild(cornerTh);
 
       visibleFactorIndices.forEach(fIdx => {
         const factor = factors[fIdx];
         const th = document.createElement('th');
         th.className = 'col-header-vertical';
-        const isRemoved = removedIndicesSet.has(fIdx);
-        if (isRemoved) th.classList.add('removed-header');
-        th.textContent = `#${fIdx + 1} ${factor.name_ru}`;
-        th.title = `${factor.name_ru} (${factor.category})`;
+        const isMergedFactor = !v2ActiveFactorIndices.includes(fIdx);
+        const isStaticRemoved = removedIndicesSet.has(fIdx);
+
+        if (isMergedFactor) {
+          th.classList.add('merged-factor-header');
+          const mergedInfo = window.v2MergedFactorsMap?.get(fIdx);
+          const partnerName = mergedInfo ? factors[mergedInfo.partnerIndex]?.name_ru : '';
+          th.textContent = `#${fIdx + 1} ${factor.name_ru} [Слит]`;
+          th.title = `Слит по SVD мультиколлинеарности с #${(mergedInfo?.partnerIndex || 0) + 1} (${partnerName})`;
+        } else if (isStaticRemoved && currentHeatmapMode === 'cleaned') {
+          th.classList.add('removed-header');
+          th.textContent = `#${fIdx + 1} ${factor.name_ru}`;
+          th.title = `${factor.name_ru} (${factor.category})`;
+        } else {
+          th.textContent = `#${fIdx + 1} ${factor.name_ru}`;
+          th.title = `${factor.name_ru} (${factor.category})`;
+        }
         headerRow.appendChild(th);
       });
       thead.appendChild(headerRow);
       table.appendChild(thead);
 
       const tbody = document.createElement('tbody');
-      schools.forEach((school, sIdx) => {
+
+      function renderSchoolRow(school, sIdx, isMerged) {
         const tr = document.createElement('tr');
         const isA = school.id === schoolAId;
         const isB = school.id === schoolBId;
 
-        if (isA) tr.className = 'comp-row-a';
-        if (isB) tr.className = 'comp-row-b';
+        if (isMerged) tr.className = 'merged-school-row';
+        if (isA) tr.classList.add('comp-row-a');
+        if (isB) tr.classList.add('comp-row-b');
 
         const rowTh = document.createElement('td');
         rowTh.className = 'school-row-header';
         rowTh.style.borderLeft = `3px solid ${isA ? 'var(--accent-cyan)' : (isB ? 'var(--accent-crimson)' : getSchoolColor(school.id))}`;
-        rowTh.innerHTML = `<div>${isA ? '🔵 ' : (isB ? '🔴 ' : '')}${school.name_ru}</div><div style="font-size: 10px; font-weight: 400; color: var(--text-muted);">${school.period}</div>`;
+
+        let partnerBadge = '';
+        if (isMerged) {
+          const mergedData = window.v2MergedSchoolsMap?.get(school.id);
+          const partnerId = typeof mergedData === 'object' ? mergedData.partnerId : mergedData;
+          const partner = schools.find(s => s.id === partnerId);
+          const partnerName = partner ? partner.name_ru : 'Базовая школа';
+          partnerBadge = `<div class="badge-merged-partner">Слита с: ${partnerName}</div>`;
+        }
+
+        rowTh.innerHTML = `<div>${isA ? '🔵 ' : (isB ? '🔴 ' : '')}${school.name_ru}</div><div style="font-size: 10px; font-weight: 400; color: var(--text-muted);">${school.period}</div>${partnerBadge}`;
         tr.appendChild(rowTh);
 
         visibleFactorIndices.forEach(fIdx => {
           const val = matrix[sIdx][fIdx];
           const td = document.createElement('td');
           td.className = 'matrix-cell';
-          const isRemoved = removedIndicesSet.has(fIdx);
-          if (isRemoved && currentHeatmapMode === 'original') {
-            td.classList.add('removed-factor-col');
+          td.dataset.sidx = sIdx;
+          td.dataset.fidx = fIdx;
+          const isMergedFactor = !v2ActiveFactorIndices.includes(fIdx);
+          if (isMergedFactor) {
+            td.classList.add('merged-factor-cell');
           }
           td.style.backgroundColor = getScoreColor(val);
           td.style.color = getTextColor(val);
           td.textContent = (val > 0 ? '+' : '') + val.toFixed(1);
-          attachTooltipEvents(td, sIdx, fIdx, val);
           tr.appendChild(td);
         });
 
         tbody.appendChild(tr);
+      }
+
+      // 1. Рендерим активные школы
+      activeSchools.forEach(({ school, sIdx }) => {
+        renderSchoolRow(school, sIdx, false);
       });
+
+      // 2. Если режим 'archive' и есть слитые школы — выводим разделитель и строки слитых школ внизу
+      if (heatmapMergedDisplayMode === 'archive' && mergedSchools.length > 0) {
+        const dividerTr = document.createElement('tr');
+        dividerTr.className = 'merged-section-divider';
+        const dividerTd = document.createElement('td');
+        dividerTd.colSpan = visibleFactorIndices.length + 1;
+        dividerTd.innerHTML = `
+          <div class="merged-divider-content">
+            <span class="merged-divider-title">🏛️ Слитые школы (${mergedSchools.length}) — перемещены в архив</span>
+            <span class="merged-divider-hint">Объединены с наиболее близкими школами по SVD-мультиколлинеарности</span>
+          </div>
+        `;
+        dividerTr.appendChild(dividerTd);
+        tbody.appendChild(dividerTr);
+
+        mergedSchools.forEach(({ school, sIdx }) => {
+          renderSchoolRow(school, sIdx, true);
+        });
+      }
+
       table.appendChild(tbody);
     }
 
     container.appendChild(table);
   }
 
-  // Floating Tooltip Engine
+  // Floating Tooltip Engine с event delegation (высокая производительность 60+ FPS)
   const tooltip = document.getElementById('floating-tooltip');
+  let heatmapDelegationInitialized = false;
 
-  function attachTooltipEvents(element, sIdx, fIdx, val) {
-    element.addEventListener('mouseenter', (e) => {
-      const school = schools[sIdx];
-      const factor = factors[fIdx];
-      const isRemoved = removedIndicesSet.has(fIdx);
+  function initHeatmapDelegation() {
+    const container = document.getElementById('matrix-table-container');
+    const scrollContainer = document.getElementById('heatmap-scroll-container');
+    if (!container || heatmapDelegationInitialized) return;
+    heatmapDelegationInitialized = true;
 
-      let verbalStance = 'Нейтрально / Индифферентно';
-      if (val >= 0.75) verbalStance = 'Фундаментальный приоритет учения';
-      else if (val >= 0.25) verbalStance = 'Умеренная поддержка';
-      else if (val <= -0.75) verbalStance = 'Категорическое отрицание';
-      else if (val <= -0.25) verbalStance = 'Существенное несогласие';
+    // При прокрутке мгновенно скрываем плавающий тултип, не блокируя композитор
+    if (scrollContainer) {
+      scrollContainer.addEventListener('scroll', () => {
+        if (tooltip && !tooltip.classList.contains('hidden')) {
+          tooltip.classList.add('hidden');
+        }
+      }, { passive: true });
+    }
 
-      tooltip.innerHTML = `
-        <div class="tooltip-school-title" style="color: ${getSchoolColor(school.id)}">${school.name_ru}</div>
-        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">${school.period} • ${school.key_figures.slice(0, 2).join(', ')}</div>
-        <div class="tooltip-factor-name">${factor.name_ru}</div>
-        <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">${factor.description}</div>
-        <div class="tooltip-score-row">
-          <span class="tooltip-category-tag">${factor.category}</span>
-          <span class="tooltip-score-badge" style="background: ${getScoreColor(val)}; color: ${getTextColor(val)}">
-            ${val > 0 ? '+' : ''}${val.toFixed(2)} (${verbalStance})
-          </span>
-        </div>
-        ${isRemoved ? `<div style="margin-top: 6px; font-size: 10px; color: var(--accent-crimson); font-weight: 600;">⚠️ Строка ${fIdx + 1} удалена при анализе мультиколлинеарности</div>` : ''}
-      `;
-
-      tooltip.classList.remove('hidden');
-      updateTooltipPos(e);
+    container.addEventListener('mouseover', (e) => {
+      const td = e.target.closest('.matrix-cell');
+      if (!td || td.classList.contains('delta-cell')) return;
+      const sIdx = parseInt(td.dataset.sidx, 10);
+      const fIdx = parseInt(td.dataset.fidx, 10);
+      if (isNaN(sIdx) || isNaN(fIdx)) return;
+      showCellTooltip(sIdx, fIdx, matrix[sIdx][fIdx], e);
     });
 
-    element.addEventListener('mousemove', updateTooltipPos);
-    element.addEventListener('mouseleave', () => {
-      tooltip.classList.add('hidden');
+    container.addEventListener('mousemove', (e) => {
+      if (tooltip && !tooltip.classList.contains('hidden')) {
+        updateTooltipPos(e);
+      }
     });
+
+    container.addEventListener('mouseout', (e) => {
+      const td = e.target.closest('.matrix-cell');
+      if (td && (!e.relatedTarget || !e.relatedTarget.closest('.matrix-cell'))) {
+        if (tooltip) tooltip.classList.add('hidden');
+      }
+    });
+  }
+
+  function showCellTooltip(sIdx, fIdx, val, e) {
+    if (!tooltip) return;
+    const school = schools[sIdx];
+    const factor = factors[fIdx];
+    if (!school || !factor) return;
+
+    const isRemoved = removedIndicesSet.has(fIdx);
+
+    let verbalStance = 'Нейтрально / Индифферентно';
+    if (val >= 0.75) verbalStance = 'Фундаментальный приоритет учения';
+    else if (val >= 0.25) verbalStance = 'Умеренная поддержка';
+    else if (val <= -0.75) verbalStance = 'Категорическое отрицание';
+    else if (val <= -0.25) verbalStance = 'Существенное несогласие';
+
+    tooltip.innerHTML = `
+      <div class="tooltip-school-title" style="color: ${getSchoolColor(school.id)}">${school.name_ru}</div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">${school.period} • ${school.key_figures.slice(0, 2).join(', ')}</div>
+      <div class="tooltip-factor-name">${factor.name_ru}</div>
+      <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">${factor.description}</div>
+      <div class="tooltip-score-row">
+        <span class="tooltip-category-tag">${factor.category}</span>
+        <span class="tooltip-score-badge" style="background: ${getScoreColor(val)}; color: ${getTextColor(val)}">
+          ${val > 0 ? '+' : ''}${val.toFixed(2)} (${verbalStance})
+        </span>
+      </div>
+      ${isRemoved ? `<div style="margin-top: 6px; font-size: 10px; color: var(--accent-crimson); font-weight: 600;">⚠️ Строка ${fIdx + 1} удалена при анализе мультиколлинеарности</div>` : ''}
+    `;
+
+    tooltip.classList.remove('hidden');
+    updateTooltipPos(e);
   }
 
   function updateTooltipPos(e) {
@@ -701,16 +920,27 @@
     pcaCtx = pcaCanvas.getContext('2d');
 
     const toggleVectors = document.getElementById('toggle-pca-vectors');
-    toggleVectors.addEventListener('change', (e) => {
-      showPcaVectors = e.target.checked;
-      drawPcaCanvas();
-    });
+    if (toggleVectors) {
+      toggleVectors.addEventListener('change', (e) => {
+        showPcaVectors = e.target.checked;
+        drawPcaCanvas();
+      });
+    }
+
+    const toggleHideMerged = document.getElementById('toggle-pca-hide-merged');
+    if (toggleHideMerged) {
+      toggleHideMerged.addEventListener('change', () => {
+        drawPcaCanvas();
+      });
+    }
 
     const resetBtn = document.getElementById('btn-reset-pca-zoom');
-    resetBtn.addEventListener('click', () => {
-      pcaTransform = { k: 1.0, x: 0, y: 0 };
-      drawPcaCanvas();
-    });
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        pcaTransform = { k: 1.0, x: 0, y: 0 };
+        drawPcaCanvas();
+      });
+    }
 
     pcaCanvas.addEventListener('click', handlePcaClick);
     renderPcaDualInspector();
@@ -719,12 +949,15 @@
   function drawPcaCanvas() {
     if (!pcaCanvas || !pcaCtx) return;
     const dpr = window.devicePixelRatio || 1;
-    const rect = pcaCanvas.getBoundingClientRect();
-    const width = rect.width > 50 ? rect.width : (pcaCanvas.parentElement?.clientWidth || 950);
+    const width = pcaCanvas.clientWidth || pcaCanvas.parentElement?.clientWidth || 950;
     const height = 620;
 
-    pcaCanvas.width = width * dpr;
-    pcaCanvas.height = height * dpr;
+    const targetW = Math.round(width * dpr);
+    const targetH = Math.round(height * dpr);
+    if (pcaCanvas.width !== targetW || pcaCanvas.height !== targetH) {
+      pcaCanvas.width = targetW;
+      pcaCanvas.height = targetH;
+    }
     pcaCtx.setTransform(1, 0, 0, 1, 0, 0);
     pcaCtx.scale(dpr, dpr);
 
@@ -811,15 +1044,51 @@
       if (distEl) distEl.textContent = `${dist.toFixed(2)} ед.`;
     }
 
+    const hideMergedPca = document.getElementById('toggle-pca-hide-merged')?.checked;
+
+    // 2.5. Линии слияния школ (Dual SVD Reducer Links)
+    if (window.v2MergedSchoolsMap && window.v2MergedSchoolsMap.size > 0 && !hideMergedPca) {
+      pcaCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      pcaCtx.lineWidth = 1;
+      pcaCtx.setLineDash([3, 4]);
+      window.v2MergedSchoolsMap.forEach((meta, removedId) => {
+        const partnerId = typeof meta === 'object' ? meta.partnerId : meta;
+        const sRem = pcaSchools.find(s => s.id === removedId);
+        const sPart = pcaSchools.find(s => s.id === partnerId);
+        if (sRem && sPart) {
+          const rx = cx + sRem.x * scale;
+          const ry = cy - sRem.y * scale;
+          const px = cx + sPart.x * scale;
+          const py = cy - sPart.y * scale;
+          pcaCtx.beginPath();
+          pcaCtx.moveTo(rx, ry);
+          pcaCtx.lineTo(px, py);
+          pcaCtx.stroke();
+        }
+      });
+      pcaCtx.setLineDash([]);
+    }
+
     // 3. Точки школ
     pcaSchools.forEach((s) => {
-      const px = cx + s.x * scale;
-      const py = cy - s.y * scale;
-
       const isA = s.id === schoolAId;
       const isB = s.id === schoolBId;
       const isSelected = isA || isB;
+      const isMerged = window.v2MergedSchoolsMap && window.v2MergedSchoolsMap.has(s.id);
+
+      // Если включено сокрытие слитых школ — отбрасываем их с холста
+      if (isMerged && !isSelected && hideMergedPca) {
+        return;
+      }
+
+      const px = cx + s.x * scale;
+      const py = cy - s.y * scale;
       const color = isA ? '#00f0ff' : (isB ? '#ef4444' : getSchoolColor(s.id));
+
+      pcaCtx.save();
+      if (isMerged && !isSelected) {
+        pcaCtx.globalAlpha = 0.35;
+      }
 
       if (isSelected) {
         pcaCtx.beginPath();
@@ -832,16 +1101,20 @@
       }
 
       pcaCtx.beginPath();
-      pcaCtx.arc(px, py, isSelected ? 8 : 6, 0, Math.PI * 2);
+      pcaCtx.arc(px, py, isSelected ? 8 : (isMerged ? 4.5 : 6), 0, Math.PI * 2);
       pcaCtx.fillStyle = color;
       pcaCtx.fill();
       pcaCtx.strokeStyle = '#fff';
-      pcaCtx.lineWidth = 1.5;
+      pcaCtx.lineWidth = isMerged ? 1 : 1.5;
       pcaCtx.stroke();
 
-      pcaCtx.font = isSelected ? '700 12px Inter' : '500 10.5px Inter';
-      pcaCtx.fillStyle = isSelected ? '#ffffff' : 'rgba(248, 250, 252, 0.85)';
-      pcaCtx.fillText((isA ? '🔵 ' : (isB ? '🔴 ' : '')) + s.name_ru, px + 10, py + 4);
+      pcaCtx.font = isSelected ? '700 12px Inter' : (isMerged ? '400 9.5px Inter' : '500 10.5px Inter');
+      pcaCtx.fillStyle = isSelected ? '#ffffff' : (isMerged ? 'rgba(255, 255, 255, 0.45)' : 'rgba(248, 250, 252, 0.85)');
+      const labelPrefix = isA ? '🔵 ' : (isB ? '🔴 ' : '');
+      const labelSuffix = isMerged ? ' (слито)' : '';
+      pcaCtx.fillText(labelPrefix + s.name_ru + labelSuffix, px + 10, py + 4);
+
+      pcaCtx.restore();
     });
 
     renderPcaDualInspector();
@@ -1708,234 +1981,880 @@
     ctx.fillText('■ Выбранный Cond = ' + currentCondVal.toFixed(2) + ' (' + (50 - currentStepIndex) + ' факт.)', padLeft + 195, padTop - 12);
   }
 
-  /* ─────────────────────────────────────────────────────────────────────────
-     7. СРАВНИТЕЛЬНОЕ ДОСЬЕ И ЭНЦИКЛОПЕДИЯ
-  ───────────────────────────────────────────────────────────────────────── */
-  function initEncyclopedia() {
-    const btnSideBySide = document.getElementById('btn-subnav-sidebyside');
-    const btnSchools = document.getElementById('btn-subnav-schools');
-    const btnFactors = document.getElementById('btn-subnav-factors');
 
-    const viewSideBySide = document.getElementById('view-encyclopedia-sidebyside');
-    const viewSchools = document.getElementById('view-encyclopedia-schools');
-    const viewFactors = document.getElementById('view-encyclopedia-factors');
 
-    btnSideBySide.addEventListener('click', () => {
-      btnSideBySide.classList.add('active');
-      btnSchools.classList.remove('active');
-      btnFactors.classList.remove('active');
-      viewSideBySide.classList.remove('hidden');
-      viewSchools.classList.add('hidden');
-      viewFactors.classList.add('hidden');
-      renderSideBySideDossier();
-    });
+  /* ═══════════════════════════════════════════════════════════════════════════
+     ── V2 HUMAN-CENTRIC CORE ENGINE ──────────────────────────────────────────
+     Двойной SVD-слайдер, Экономический Компас, Арена Дебатов и переключатель версий
+     idea by imEvt • UI/UX by technocat • powered by Gemini
+     ═══════════════════════════════════════════════════════════════════════════ */
 
-    btnSchools.addEventListener('click', () => {
-      btnSchools.classList.add('active');
-      btnSideBySide.classList.remove('active');
-      btnFactors.classList.remove('active');
-      viewSchools.classList.remove('hidden');
-      viewSideBySide.classList.add('hidden');
-      viewFactors.classList.add('hidden');
-      renderEncyclopediaCards();
-    });
+  window.v2MergedSchoolsMap = new Map(); // id слитой школы -> id партнерской школы
+  let v2SchoolReductionStep = 0; // 0..20
+  let v2FactorReductionStep = 0; // 0..25
 
-    btnFactors.addEventListener('click', () => {
-      btnFactors.classList.add('active');
-      btnSideBySide.classList.remove('active');
-      btnSchools.classList.remove('active');
-      viewFactors.classList.remove('hidden');
-      viewSideBySide.classList.add('hidden');
-      viewSchools.classList.add('hidden');
-      renderFactorCards();
-    });
+  let v2ActiveSchoolIndices = schools.map((_, i) => i);
+  let v2ActiveFactorIndices = factors.map((_, i) => i);
 
-    const searchSchools = document.getElementById('encyclopedia-search-schools');
-    if (searchSchools) {
-      searchSchools.addEventListener('input', (e) => {
-        renderEncyclopediaCards(e.target.value.toLowerCase());
-      });
+  let v2SchoolReductionSeq = [];
+  let v2FactorReductionSeq = [];
+
+  // 1. Быстрый математический SVD-движок (алгоритм вращений Якоби с ранней сходимостью)
+  function computeJacobiEigenvalues(A, maxSweeps = 15, tol = 1e-7) {
+    const n = A.length;
+    if (n === 0) return [];
+    if (n === 1) return [A[0][0]];
+    const a = [];
+    const d = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      a[i] = new Float64Array(n);
+      for (let j = 0; j < n; j++) a[i][j] = A[i][j];
+      d[i] = a[i][i];
     }
-
-    const searchFactors = document.getElementById('encyclopedia-search-factors');
-    if (searchFactors) {
-      searchFactors.addEventListener('input', (e) => {
-        renderFactorCards(e.target.value.toLowerCase());
-      });
+    for (let sweep = 0; sweep < maxSweeps; sweep++) {
+      let sm = 0;
+      for (let i = 0; i < n - 1; i++) {
+        for (let j = i + 1; j < n; j++) sm += Math.abs(a[i][j]);
+      }
+      if (sm < tol) break;
+      const thresh = sweep < 3 ? 0.2 * sm / (n * n) : 0.0;
+      for (let p = 0; p < n - 1; p++) {
+        for (let q = p + 1; q < n; q++) {
+          const gap = 100.0 * Math.abs(a[p][q]);
+          if (sweep > 3 && (Math.abs(d[p]) + gap === Math.abs(d[p])) && (Math.abs(d[q]) + gap === Math.abs(d[q]))) {
+            a[p][q] = 0.0;
+          } else if (Math.abs(a[p][q]) > thresh) {
+            const h = d[q] - d[p];
+            let t;
+            if (Math.abs(h) + gap === Math.abs(h)) {
+              t = a[p][q] / h;
+            } else {
+              const theta = 0.5 * h / a[p][q];
+              t = 1.0 / (Math.abs(theta) + Math.sqrt(1.0 + theta * theta));
+              if (theta < 0.0) t = -t;
+            }
+            const c = 1.0 / Math.sqrt(1.0 + t * t);
+            const s = t * c;
+            const tau = s / (1.0 + c);
+            const apq = a[p][q];
+            a[p][q] = 0.0;
+            d[p] -= t * apq;
+            d[q] += t * apq;
+            for (let j = 0; j < p; j++) {
+              const g = a[j][p]; const hj = a[j][q];
+              a[j][p] = g - s * (hj + g * tau);
+              a[j][q] = hj + s * (g - hj * tau);
+            }
+            for (let j = p + 1; j < q; j++) {
+              const g = a[p][j]; const hj = a[j][q];
+              a[p][j] = g - s * (hj + g * tau);
+              a[j][q] = hj + s * (g - hj * tau);
+            }
+            for (let j = q + 1; j < n; j++) {
+              const g = a[p][j]; const hj = a[q][j];
+              a[p][j] = g - s * (hj + g * tau);
+              a[q][j] = hj + s * (g - hj * tau);
+            }
+          }
+        }
+      }
     }
-
-    renderSideBySideDossier();
+    const eig = Array.from(d);
+    eig.sort((x, y) => y - x);
+    return eig;
   }
 
-  function renderSideBySideDossier() {
-    const container = document.getElementById('sidebyside-dossier-grid');
-    if (!container) return;
-    container.innerHTML = '';
+  function computeSubmatrixCond(rowIdxs, colIdxs) {
+    const k = rowIdxs.length;
+    const l = colIdxs.length;
+    if (k < 2 || l < 2) return 1.0;
 
-    const sA = schools.find(s => s.id === schoolAId);
-    const sB = schools.find(s => s.id === schoolBId);
-    if (!sA || !sB) return;
-
-    const idxA = schools.indexOf(sA);
-    const idxB = schools.indexOf(sB);
-    const rowA = matrix[idxA];
-    const rowB = matrix[idxB];
-
-    // Находим точки консенсуса и диссонанса
-    const consensus = [];
-    const dissensus = [];
-
-    factors.forEach((f, i) => {
-      const vA = rowA[i];
-      const vB = rowB[i];
-      const diff = Math.abs(vA - vB);
-
-      if ((vA >= 0.5 && vB >= 0.5) || (vA <= -0.5 && vB <= -0.5)) {
-        consensus.push({ factor: f, vA, vB });
-      } else if (diff >= 1.4) {
-        dissensus.push({ factor: f, vA, vB, diff });
+    if (k <= l) {
+      const B = [];
+      for (let i = 0; i < k; i++) {
+        B[i] = new Float64Array(k);
+        const rI = rowIdxs[i];
+        for (let j = 0; j <= i; j++) {
+          const rJ = rowIdxs[j];
+          let dot = 0;
+          for (let c = 0; c < l; c++) {
+            const col = colIdxs[c];
+            dot += matrix[rI][col] * matrix[rJ][col];
+          }
+          B[i][j] = dot;
+          B[j][i] = dot;
+        }
       }
+      const eigs = computeJacobiEigenvalues(B);
+      const sigmaMax = Math.sqrt(Math.max(0, eigs[0]));
+      const sigmaMin = Math.sqrt(Math.max(0, eigs[eigs.length - 1]));
+      return (sigmaMin > 1e-9) ? (sigmaMax / sigmaMin) : 999.0;
+    } else {
+      const B = [];
+      for (let i = 0; i < l; i++) {
+        B[i] = new Float64Array(l);
+        const cI = colIdxs[i];
+        for (let j = 0; j <= i; j++) {
+          const cJ = colIdxs[j];
+          let dot = 0;
+          for (let r = 0; r < k; r++) {
+            const row = rowIdxs[r];
+            dot += matrix[row][cI] * matrix[row][cJ];
+          }
+          B[i][j] = dot;
+          B[j][i] = dot;
+        }
+      }
+      const eigs = computeJacobiEigenvalues(B);
+      const sigmaMax = Math.sqrt(Math.max(0, eigs[0]));
+      const sigmaMin = Math.sqrt(Math.max(0, eigs[eigs.length - 1]));
+      return (sigmaMin > 1e-9) ? (sigmaMax / sigmaMin) : 999.0;
+    }
+  }
+
+  // 2. Сверхбыстрый расчет цепочки слияния школ (по максимальной косинусной близости)
+  function calculateSchoolReductionSequence(activeCols, maxSteps = 20) {
+    let currentRows = schools.map((_, i) => i);
+    const history = [];
+    let prevCond = computeSubmatrixCond(currentRows, activeCols);
+
+    for (let step = 1; step <= maxSteps && currentRows.length > 5; step++) {
+      let maxSim = -Infinity;
+      let bestA = currentRows[0];
+      let bestB = currentRows[1];
+
+      for (let i = 0; i < currentRows.length - 1; i++) {
+        const rA = currentRows[i];
+        for (let j = i + 1; j < currentRows.length; j++) {
+          const rB = currentRows[j];
+          let dot = 0, nA = 0, nB = 0;
+          for (let c = 0; c < activeCols.length; c++) {
+            const col = activeCols[c];
+            const vA = matrix[rA][col];
+            const vB = matrix[rB][col];
+            dot += vA * vB;
+            nA += vA * vA;
+            nB += vB * vB;
+          }
+          const sim = (nA > 0 && nB > 0) ? (dot / (Math.sqrt(nA) * Math.sqrt(nB))) : 0;
+          if (sim > maxSim) {
+            maxSim = sim;
+            bestA = rA;
+            bestB = rB;
+          }
+        }
+      }
+
+      // Сохраняем более раннюю базовую школу, а вторую сливаем
+      const partnerIndex = Math.min(bestA, bestB);
+      const removedSchoolIndex = Math.max(bestA, bestB);
+
+      currentRows = currentRows.filter(r => r !== removedSchoolIndex);
+
+      const diffs = activeCols.map(col => ({
+        col,
+        diff: Math.abs(matrix[removedSchoolIndex][col] - matrix[partnerIndex][col]),
+        name: factors[col].name_ru
+      }));
+      diffs.sort((a, b) => a.diff - b.diff);
+
+      const commonPoints = diffs.slice(0, 3).map(d => d.name);
+      const conflictPoint = diffs[diffs.length - 1].name;
+      const condAfter = computeSubmatrixCond(currentRows, activeCols);
+
+      history.push({
+        step,
+        removedSchoolIndex,
+        removedSchool: schools[removedSchoolIndex],
+        partnerIndex,
+        partnerSchool: schools[partnerIndex],
+        similarity: maxSim,
+        commonPoints,
+        conflictPoint,
+        condBefore: prevCond,
+        condAfter,
+        delta: Math.max(0, prevCond - condAfter),
+        remainingRows: [...currentRows]
+      });
+
+      prevCond = condAfter;
+    }
+
+    return history;
+  }
+
+  // 3. Сверхбыстрый расчет цепочки слияния факторов (по максимальной корреляции Пирсона)
+  function calculateFactorReductionSequence(activeRows, maxSteps = 25) {
+    let currentCols = factors.map((_, i) => i);
+    const history = [];
+    let prevCond = computeSubmatrixCond(activeRows, currentCols);
+    const n = activeRows.length;
+
+    for (let step = 1; step <= maxSteps && currentCols.length > 5; step++) {
+      let maxAbsCorr = -1;
+      let bestA = currentCols[0];
+      let bestB = currentCols[1];
+      let bestCorr = 0;
+
+      for (let i = 0; i < currentCols.length - 1; i++) {
+        const cA = currentCols[i];
+        let sumA = 0;
+        for (let r = 0; r < n; r++) sumA += matrix[activeRows[r]][cA];
+        const meanA = sumA / n;
+
+        for (let j = i + 1; j < currentCols.length; j++) {
+          const cB = currentCols[j];
+          let sumB = 0;
+          for (let r = 0; r < n; r++) sumB += matrix[activeRows[r]][cB];
+          const meanB = sumB / n;
+
+          let num = 0, denA = 0, denB = 0;
+          for (let r = 0; r < n; r++) {
+            const da = matrix[activeRows[r]][cA] - meanA;
+            const db = matrix[activeRows[r]][cB] - meanB;
+            num += da * db;
+            denA += da * da;
+            denB += db * db;
+          }
+          const corr = (denA > 1e-12 && denB > 1e-12) ? (num / (Math.sqrt(denA) * Math.sqrt(denB))) : 0;
+          const absC = Math.abs(corr);
+          if (absC > maxAbsCorr) {
+            maxAbsCorr = absC;
+            bestA = cA;
+            bestB = cB;
+            bestCorr = corr;
+          }
+        }
+      }
+
+      // Сохраняем более ранний фактор, а парный сливаем
+      const partnerIndex = Math.min(bestA, bestB);
+      const removedFactorIndex = Math.max(bestA, bestB);
+
+      currentCols = currentCols.filter(c => c !== removedFactorIndex);
+      const condAfter = computeSubmatrixCond(activeRows, currentCols);
+
+      history.push({
+        step,
+        removedIndex: removedFactorIndex,
+        removedFactorIndex,
+        removedFactor: factors[removedFactorIndex],
+        partnerIndex,
+        partnerFactor: factors[partnerIndex],
+        correlation: bestCorr,
+        condBefore: prevCond,
+        condAfter,
+        delta: Math.max(0, prevCond - condAfter),
+        remainingCols: [...currentCols]
+      });
+
+      prevCond = condAfter;
+    }
+
+    return history;
+  }
+
+  // 4. Обновление состояния двойного слайдера с троттлингом через rAF
+  let dualSvdRafId = null;
+
+  function updateDualSvdState(immediate = false) {
+    if (v2SchoolReductionStep === 0) {
+      v2ActiveSchoolIndices = schools.map((_, i) => i);
+      window.v2MergedSchoolsMap.clear();
+    } else {
+      const stepIdx = Math.min(v2SchoolReductionStep - 1, v2SchoolReductionSeq.length - 1);
+      const stepData = v2SchoolReductionSeq[stepIdx];
+      v2ActiveSchoolIndices = stepData ? stepData.remainingRows : schools.map((_, i) => i);
+      window.v2MergedSchoolsMap.clear();
+      for (let s = 0; s < v2SchoolReductionStep && s < v2SchoolReductionSeq.length; s++) {
+        const item = v2SchoolReductionSeq[s];
+        window.v2MergedSchoolsMap.set(item.removedSchool.id, {
+          partnerId: item.partnerSchool.id,
+          partnerSchool: item.partnerSchool,
+          similarity: item.similarity
+        });
+      }
+    }
+
+    window.v2MergedFactorsMap = new Map();
+    if (v2FactorReductionStep === 0) {
+      v2ActiveFactorIndices = factors.map((_, i) => i);
+    } else {
+      const stepIdx = Math.min(v2FactorReductionStep - 1, v2FactorReductionSeq.length - 1);
+      const stepData = v2FactorReductionSeq[stepIdx];
+      v2ActiveFactorIndices = stepData ? stepData.remainingCols : factors.map((_, i) => i);
+      for (let f = 0; f < v2FactorReductionStep && f < v2FactorReductionSeq.length; f++) {
+        const item = v2FactorReductionSeq[f];
+        window.v2MergedFactorsMap.set(item.removedIndex, {
+          partnerIndex: item.partnerIndex,
+          partnerFactor: item.partnerFactor,
+          correlation: item.correlation
+        });
+      }
+    }
+
+    // Расчет текущего cond (по возможности из готовых последовательностей, чтобы не нагружать CPU)
+    let currentCond = 193.87;
+    if (v2SchoolReductionStep > 0 && v2FactorReductionStep === 0) {
+      const sItem = v2SchoolReductionSeq[Math.min(v2SchoolReductionStep - 1, v2SchoolReductionSeq.length - 1)];
+      if (sItem) currentCond = sItem.condAfter;
+    } else if (v2FactorReductionStep > 0 && v2SchoolReductionStep === 0) {
+      const fItem = v2FactorReductionSeq[Math.min(v2FactorReductionStep - 1, v2FactorReductionSeq.length - 1)];
+      if (fItem) currentCond = fItem.condAfter;
+    } else if (v2SchoolReductionStep > 0 && v2FactorReductionStep > 0) {
+      currentCond = computeSubmatrixCond(v2ActiveSchoolIndices, v2ActiveFactorIndices);
+    }
+
+    const shapeEl = document.getElementById('dual-svd-shape-val');
+    const condEl = document.getElementById('dual-svd-cond-val');
+    if (shapeEl) shapeEl.textContent = `${v2ActiveSchoolIndices.length} школ × ${v2ActiveFactorIndices.length} признаков`;
+    if (condEl) condEl.textContent = currentCond.toFixed(2);
+
+    const badgeSchools = document.getElementById('badge-schools-active-count');
+    const labelSchools = document.getElementById('label-schools-slider-val');
+    if (badgeSchools) badgeSchools.textContent = `${v2ActiveSchoolIndices.length} активны (${v2SchoolReductionStep} слито)`;
+    if (labelSchools) labelSchools.textContent = `Шаг: ${v2SchoolReductionStep}`;
+
+    const badgeFactors = document.getElementById('badge-factors-active-count');
+    const labelFactors = document.getElementById('label-factors-slider-val');
+    if (badgeFactors) badgeFactors.textContent = `${v2ActiveFactorIndices.length} активны (${v2FactorReductionStep} слито)`;
+    if (labelFactors) labelFactors.textContent = `Шаг: ${v2FactorReductionStep}`;
+
+    // Карточка подсказки ШКОЛ
+    const hudSchoolStep = document.getElementById('hud-school-step-badge');
+    const hudSchoolCond = document.getElementById('hud-school-cond-badge');
+    const hudSchoolBody = document.getElementById('hud-school-body');
+    if (v2SchoolReductionStep === 0) {
+      if (hudSchoolStep) hudSchoolStep.textContent = 'Шаг 0: Все школы активны';
+      if (hudSchoolCond) hudSchoolCond.textContent = `Cond: ${currentCond.toFixed(2)}`;
+      if (hudSchoolBody) hudSchoolBody.innerHTML = '<p class="hud-text-main">Базовый режим: все 34 исторические и современные школы представлены полностью во всей полноте деталей.</p>';
+    } else {
+      const cur = v2SchoolReductionSeq[Math.min(v2SchoolReductionStep - 1, v2SchoolReductionSeq.length - 1)];
+      if (cur) {
+        if (hudSchoolStep) hudSchoolStep.textContent = `Шаг ${cur.step}: Слияние "${cur.removedSchool.name_ru}"`;
+        if (hudSchoolCond) hudSchoolCond.textContent = `Cond: ${cur.condAfter.toFixed(2)} (Δ -${cur.delta.toFixed(2)})`;
+        if (hudSchoolBody) {
+          hudSchoolBody.innerHTML = `
+            <div class="hud-partner-row">
+              <span>🎯 Ближайший аналог:</span>
+              <strong style="color: var(--accent-cyan);">${cur.partnerSchool.name_ru}</strong>
+              <span class="badge-mini" style="background: rgba(0, 240, 255, 0.15); color: var(--accent-cyan);">${Math.round(cur.similarity * 100)}% сходства</span>
+            </div>
+            <div class="hud-tag-box">
+              <div class="hud-agree-text">🤝 <strong>Совпадают:</strong> ${cur.commonPoints.join(', ')}</div>
+              <div class="hud-conflict-text">⚡ <strong>Нюанс различия:</strong> ${cur.conflictPoint}</div>
+            </div>
+          `;
+        }
+      }
+    }
+
+    // Карточка подсказки ПРИЗНАКОВ
+    const hudFactorStep = document.getElementById('hud-factor-step-badge');
+    const hudFactorCond = document.getElementById('hud-factor-cond-badge');
+    const hudFactorBody = document.getElementById('hud-factor-body');
+    if (v2FactorReductionStep === 0) {
+      if (hudFactorStep) hudFactorStep.textContent = 'Шаг 0: Все признаки активны';
+      if (hudFactorCond) hudFactorCond.textContent = `Cond: ${currentCond.toFixed(2)}`;
+      if (hudFactorBody) hudFactorBody.innerHTML = '<p class="hud-text-main">Базовый режим: все 50 факторов из всех 9 сфер экономической теории активны.</p>';
+    } else {
+      const cur = v2FactorReductionSeq[Math.min(v2FactorReductionStep - 1, v2FactorReductionSeq.length - 1)];
+      if (cur) {
+        const sign = cur.correlation >= 0 ? '+' : '';
+        if (hudFactorStep) hudFactorStep.textContent = `Шаг ${cur.step}: Исключен "${cur.removedFactor.name_ru.slice(0, 32)}..."`;
+        if (hudFactorCond) hudFactorCond.textContent = `Cond: ${cur.condAfter.toFixed(2)} (Δ -${cur.delta.toFixed(2)})`;
+        if (hudFactorBody) {
+          hudFactorBody.innerHTML = `
+            <div class="hud-partner-row">
+              <span>🎯 Дублирует фактор:</span>
+              <strong style="color: var(--accent-amber);">${cur.partnerFactor.name_ru}</strong>
+              <span class="badge-mini" style="background: rgba(245, 158, 11, 0.15); color: var(--accent-amber);">r = ${sign}${cur.correlation.toFixed(2)}</span>
+            </div>
+            <p style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">
+              💡 При текущем составе активных школ этот критерий вносит максимальную избыточность в число обусловленности и дублирует парный признак.
+            </p>
+          `;
+        }
+      }
+    }
+
+    // Отрисовка строго по rAF и только активной вкладки (60+ FPS)
+    if (dualSvdRafId) cancelAnimationFrame(dualSvdRafId);
+
+    const renderActiveTabOnly = () => {
+      dualSvdRafId = null;
+      const activeTab = document.querySelector('.nav-tab.active')?.getAttribute('data-tab');
+      if (activeTab === 'pca') {
+        drawPcaCanvas();
+      } else if (activeTab === 'heatmap') {
+        renderHeatmap();
+      } else if (activeTab === 'arena') {
+        renderArena();
+      }
+    };
+
+    if (immediate) {
+      renderActiveTabOnly();
+    } else {
+      dualSvdRafId = requestAnimationFrame(renderActiveTabOnly);
+    }
+  }
+
+  function initDualSvdReducer() {
+    // Быстрый предрасчет базовых цепочек
+    v2SchoolReductionSeq = calculateSchoolReductionSequence(v2ActiveFactorIndices, 20);
+    v2FactorReductionSeq = calculateFactorReductionSequence(v2ActiveSchoolIndices, 25);
+
+    const sliderSchools = document.getElementById('slider-schools-reducer');
+    const sliderFactors = document.getElementById('slider-factors-reducer');
+    const toggleBtn = document.getElementById('btn-toggle-dual-svd');
+    const panel = document.getElementById('dual-svd-panel');
+    const toggleLabel = document.getElementById('label-toggle-dual-svd');
+    const toggleIcon = toggleBtn ? toggleBtn.querySelector('.toggle-icon') : null;
+
+    if (toggleBtn && panel) {
+      toggleBtn.addEventListener('click', () => {
+        const isCollapsed = panel.classList.toggle('collapsed');
+        if (toggleLabel) toggleLabel.textContent = isCollapsed ? 'Развернуть' : 'Свернуть';
+        if (toggleIcon) toggleIcon.textContent = isCollapsed ? '▸' : '▾';
+      });
+    }
+
+    let pendingFactorsRecompute = false;
+    let pendingSchoolsRecompute = false;
+
+    if (sliderSchools) {
+      sliderSchools.addEventListener('input', (e) => {
+        v2SchoolReductionStep = parseInt(e.target.value, 10);
+        pendingFactorsRecompute = true;
+        updateDualSvdState();
+      });
+
+      const finalizeSchools = () => {
+        if (pendingFactorsRecompute) {
+          pendingFactorsRecompute = false;
+          v2ActiveSchoolIndices = v2SchoolReductionStep === 0 
+            ? schools.map((_, i) => i) 
+            : (v2SchoolReductionSeq[Math.min(v2SchoolReductionStep - 1, v2SchoolReductionSeq.length - 1)]?.remainingRows || schools.map((_, i) => i));
+          v2FactorReductionSeq = calculateFactorReductionSequence(v2ActiveSchoolIndices, 25);
+          updateDualSvdState(true);
+        }
+      };
+
+      sliderSchools.addEventListener('change', finalizeSchools);
+      sliderSchools.addEventListener('touchend', finalizeSchools);
+      sliderSchools.addEventListener('mouseup', finalizeSchools);
+    }
+
+    if (sliderFactors) {
+      sliderFactors.addEventListener('input', (e) => {
+        if (pendingFactorsRecompute) {
+          pendingFactorsRecompute = false;
+          v2ActiveSchoolIndices = v2SchoolReductionStep === 0 
+            ? schools.map((_, i) => i) 
+            : (v2SchoolReductionSeq[Math.min(v2SchoolReductionStep - 1, v2SchoolReductionSeq.length - 1)]?.remainingRows || schools.map((_, i) => i));
+          v2FactorReductionSeq = calculateFactorReductionSequence(v2ActiveSchoolIndices, 25);
+        }
+
+        v2FactorReductionStep = parseInt(e.target.value, 10);
+        pendingSchoolsRecompute = true;
+        updateDualSvdState();
+      });
+
+      const finalizeFactors = () => {
+        if (pendingSchoolsRecompute) {
+          pendingSchoolsRecompute = false;
+          v2ActiveFactorIndices = v2FactorReductionStep === 0 
+            ? factors.map((_, i) => i) 
+            : (v2FactorReductionSeq[Math.min(v2FactorReductionStep - 1, v2FactorReductionSeq.length - 1)]?.remainingCols || factors.map((_, i) => i));
+          v2SchoolReductionSeq = calculateSchoolReductionSequence(v2ActiveFactorIndices, 20);
+          updateDualSvdState(true);
+        }
+      };
+
+      sliderFactors.addEventListener('change', finalizeFactors);
+      sliderFactors.addEventListener('touchend', finalizeFactors);
+      sliderFactors.addEventListener('mouseup', finalizeFactors);
+    }
+
+    updateDualSvdState(true);
+  }
+
+  // 5. Переключатель версий v2 Human / v1 Classic Pro
+  function initVersionSwitcher() {
+    const btnV2 = document.getElementById('btn-toggle-v2');
+    const btnV1 = document.getElementById('btn-toggle-v1');
+    const badge = document.getElementById('brand-version-badge');
+
+    function applyMode(mode) {
+      const isV1 = mode === 'v1';
+      document.body.classList.toggle('mode-v1', isV1);
+      document.body.classList.toggle('mode-v2', !isV1);
+
+      if (btnV2) btnV2.classList.toggle('active', !isV1);
+      if (btnV1) btnV1.classList.toggle('active', isV1);
+      if (badge) badge.textContent = isV1 ? 'v1.0 Classic Pro' : 'v2.0 Human';
+
+      localStorage.setItem('econmatrix_version', mode);
+
+      // Если переключились на v1 и открыт компас или арена — переключаем на heatmap
+      if (isV1) {
+        const activeTab = document.querySelector('.nav-tab.active')?.getAttribute('data-tab');
+        if (activeTab === 'compass' || activeTab === 'arena') {
+          const heatmapBtn = document.getElementById('tab-btn-heatmap');
+          if (heatmapBtn) heatmapBtn.click();
+        }
+      }
+
+      // Обновляем видимость контекстных панелей (SVD индикатор и селектор сравнения)
+      updateContextualPanels();
+    }
+
+    if (btnV2) btnV2.addEventListener('click', () => applyMode('v2'));
+    if (btnV1) btnV1.addEventListener('click', () => applyMode('v1'));
+
+    const savedMode = localStorage.getItem('econmatrix_version') || 'v2';
+    applyMode(savedMode);
+  }
+
+  // 6. Экономический Компас (Квиз 5 дилемм)
+  const COMPASS_DILEMMAS = [
+    {
+      id: 'd1',
+      factorIndex: 0, // f01_state_intervention
+      name: 'Роль государства в экономике',
+      question: 'Как должно функционировать государственное регулирование рынков?',
+      leftPole: '🏛️ Госплан, контроль цен и национализация',
+      rightPole: '🗽 Полная свобода рынка и Laissez-faire',
+      defaultValue: 0.0
+    },
+    {
+      id: 'd2',
+      factorIndex: 15, // f16_progressive_income_tax
+      name: 'Налоги и социальная справедливость',
+      question: 'Нужно ли высокое прогрессивное налогообложение капитала и сверхбогатых?',
+      leftPole: '⚖️ Высокий прогрессивный налог ради равенства',
+      rightPole: '📉 Низкие плоские налоги для стимулов бизнеса',
+      defaultValue: 0.0
+    },
+    {
+      id: 'd3',
+      factorIndex: 3, // f04_free_trade_globalism
+      name: 'Международная торговля',
+      question: 'Как стране выстраивать внешнеэкономические связи?',
+      leftPole: '🛡️ Протекционизм и тарифная защита промышленности',
+      rightPole: '🌐 Свободная мировая торговля без барьеров',
+      defaultValue: 0.0
+    },
+    {
+      id: 'd4',
+      factorIndex: 33, // f34_minimum_wage_support
+      name: 'Рынок труда и заработная плата',
+      question: 'Должно ли государство законодательно регулировать МРОТ и трудовые права?',
+      leftPole: '👷 Обязательный МРОТ и сильные профсоюзы',
+      rightPole: '💼 Гибкий рынок труда без внешних барьеров',
+      defaultValue: 0.0
+    },
+    {
+      id: 'd5',
+      factorIndex: 41, // f42_ecological_limits_degrowth
+      name: 'Экология и пределы роста',
+      question: 'Что важнее: сохранение биосферы или непрерывный экономический рост ВВП?',
+      leftPole: '🌱 Биофизические пределы роста / Антирост',
+      rightPole: '🚀 Рыночный рост ВВП превыше экологических лимитов',
+      defaultValue: 0.0
+    }
+  ];
+
+  let compassValues = COMPASS_DILEMMAS.map(d => d.defaultValue);
+
+  function initCompass() {
+    renderCompass();
+  }
+
+  function renderCompass() {
+    const container = document.getElementById('dilemmas-container');
+    if (!container) return;
+
+    // Рендерим слайдеры только один раз
+    if (container.children.length === 0) {
+      container.innerHTML = '';
+      COMPASS_DILEMMAS.forEach((d, idx) => {
+        const card = document.createElement('div');
+        card.className = 'dilemma-card';
+        card.innerHTML = `
+          <div class="dilemma-header">
+            <span class="dilemma-num">Дилемма #${idx + 1}: ${d.name}</span>
+            <span class="dilemma-val-badge" id="dilemma-badge-${idx}">0.0 (Нейтрально)</span>
+          </div>
+          <div class="dilemma-question">${d.question}</div>
+          <div class="dilemma-poles-row">
+            <span class="pole-left">${d.leftPole}</span>
+            <span class="pole-right">${d.rightPole}</span>
+          </div>
+          <input type="range" class="styled-range dilemma-slider" id="slider-dilemma-${idx}" min="-1.0" max="1.0" step="0.25" value="${compassValues[idx]}">
+        `;
+        container.appendChild(card);
+
+        const slider = card.querySelector(`#slider-dilemma-${idx}`);
+        slider.addEventListener('input', (e) => {
+          compassValues[idx] = parseFloat(e.target.value);
+          updateCompassBadge(idx, compassValues[idx]);
+          calculateCompassAffinity();
+        });
+      });
+
+      // Пресеты
+      document.querySelectorAll('.compass-preset-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const p = btn.getAttribute('data-preset');
+          if (p === 'market') compassValues = [-0.9, -0.9, 0.9, -0.9, -0.7];
+          if (p === 'state') compassValues = [0.9, 0.9, -0.6, 0.9, 0.6];
+          if (p === 'keynesian') compassValues = [0.6, 0.7, 0.4, 0.8, 0.3];
+          if (p === 'reset') compassValues = [0.0, 0.0, 0.0, 0.0, 0.0];
+
+          COMPASS_DILEMMAS.forEach((_, i) => {
+            const sl = document.getElementById(`slider-dilemma-${i}`);
+            if (sl) sl.value = compassValues[i];
+            updateCompassBadge(i, compassValues[i]);
+          });
+          calculateCompassAffinity();
+        });
+      });
+
+      const duelBtn = document.getElementById('btn-compass-open-duel');
+      if (duelBtn) {
+        duelBtn.addEventListener('click', () => {
+          if (window.compassTopSchoolId) {
+            setGlobalSchools(window.compassTopSchoolId, schoolBId === window.compassTopSchoolId ? 'austrian' : schoolBId);
+            const arenaTabBtn = document.getElementById('tab-btn-arena');
+            if (arenaTabBtn) arenaTabBtn.click();
+          }
+        });
+      }
+    }
+
+    calculateCompassAffinity();
+  }
+
+  function updateCompassBadge(idx, val) {
+    const badge = document.getElementById(`dilemma-badge-${idx}`);
+    if (!badge) return;
+    let label = `${val > 0 ? '+' : ''}${val.toFixed(2)}`;
+    if (val <= -0.75) label += ' (Крайний левый)';
+    else if (val <= -0.25) label += ' (Умеренный левый)';
+    else if (val >= 0.75) label += ' (Крайний правый)';
+    else if (val >= 0.25) label += ' (Умеренный правый)';
+    else label += ' (Баланс / Нейтрально)';
+    badge.textContent = label;
+  }
+
+  function calculateCompassAffinity() {
+    // Вектор пользователя по 5 факторам
+    // Для фактора f01: влево = +1 (госплан), вправо = -1 (рынок)
+    // Сопоставляем значения со шкалой школы:
+    const userVector = [
+      -compassValues[0], // f01: left (state) = +1.0, right (market) = -1.0
+      -compassValues[1], // f16: left (tax) = +1.0, right = -1.0
+      compassValues[2],  // f04: right (free trade) = +1.0, left = -1.0
+      -compassValues[3], // f34: left (wage support) = +1.0, right = -1.0
+      -compassValues[4]  // f42: left (degrowth) = +1.0, right = -1.0
+    ];
+
+    const targetFactorIndices = COMPASS_DILEMMAS.map(d => d.factorIndex);
+
+    // Считаем сходство со всеми активными школами
+    const scores = [];
+    v2ActiveSchoolIndices.forEach(sIdx => {
+      const s = schools[sIdx];
+      let dot = 0, nU = 0, nS = 0;
+      targetFactorIndices.forEach((fIdx, k) => {
+        const u = userVector[k];
+        const val = matrix[sIdx][fIdx];
+        dot += u * val;
+        nU += u * u;
+        nS += val * val;
+      });
+      const norm = Math.sqrt(nU) * Math.sqrt(nS);
+      const sim = (norm > 0) ? (dot / norm) : 0;
+      const pct = Math.max(0, Math.min(100, Math.round(((sim + 1) / 2) * 100)));
+      scores.push({ school: s, sim, pct });
     });
 
-    dissensus.sort((a, b) => b.diff - a.diff);
+    scores.sort((a, b) => b.sim - a.sim);
 
-    container.innerHTML = `
-      <!-- Карточка Школы А -->
-      <div class="dossier-card card-school-a">
-        <div class="encyclo-card-header">
-          <h3 class="encyclo-card-title" style="color: var(--accent-cyan);">🔵 ${sA.name_ru}</h3>
-          <span class="encyclo-card-period">${sA.period}</span>
+    if (scores.length === 0) return;
+
+    const winner = scores[0];
+    window.compassTopSchoolId = winner.school.id;
+
+    // Выводим результат
+    const nameEl = document.getElementById('compass-top-school-name');
+    const pctEl = document.getElementById('compass-top-school-pct');
+    const descEl = document.getElementById('compass-top-school-desc');
+    const familyEl = document.getElementById('compass-best-family');
+
+    if (nameEl) nameEl.textContent = winner.school.name_ru;
+    if (pctEl) pctEl.textContent = `${winner.pct}% совпадения`;
+    if (descEl) descEl.textContent = winner.school.description;
+    if (familyEl) {
+      const fam = getSchoolFamily(winner.school.id);
+      familyEl.textContent = fam.toUpperCase();
+      familyEl.style.backgroundColor = `${getSchoolColor(winner.school.id)}25`;
+      familyEl.style.color = getSchoolColor(winner.school.id);
+    }
+
+    // Сайдбар со шкалами affinity топ-5
+    const barsContainer = document.getElementById('compass-affinity-bars');
+    if (barsContainer) {
+      barsContainer.innerHTML = '';
+      scores.slice(0, 5).forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'affinity-item';
+        div.innerHTML = `
+          <div class="affinity-labels">
+            <span class="affinity-school-name">${item.school.name_ru}</span>
+            <span class="affinity-score">${item.pct}%</span>
+          </div>
+          <div class="affinity-bar-bg">
+            <div class="affinity-bar-fill" style="width: ${item.pct}%; background: ${getSchoolColor(item.school.id)};"></div>
+          </div>
+        `;
+        barsContainer.appendChild(div);
+      });
+    }
+  }
+
+  // 7. Арена Дебатов (Дуэль двух школ)
+  function initArena() {
+    document.querySelectorAll('.arena-duel-pill').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const s1 = btn.getAttribute('data-s1');
+        const s2 = btn.getAttribute('data-s2');
+        setGlobalSchools(s1, s2);
+        renderArena();
+      });
+    });
+  }
+
+  function renderArena() {
+    const fightersContainer = document.getElementById('arena-fighters-grid');
+    if (!fightersContainer) return;
+
+    const sIdxA = schools.findIndex(s => s.id === schoolAId);
+    const sIdxB = schools.findIndex(s => s.id === schoolBId);
+    if (sIdxA === -1 || sIdxB === -1) return;
+
+    const sA = schools[sIdxA];
+    const sB = schools[sIdxB];
+
+    // Вычисляем косинусное сходство между Школой А и Б по текущим активным факторам
+    let dot = 0, nA = 0, nB = 0;
+    v2ActiveFactorIndices.forEach(col => {
+      const vA = matrix[sIdxA][col];
+      const vB = matrix[sIdxB][col];
+      dot += vA * vB;
+      nA += vA * vA;
+      nB += vB * vB;
+    });
+    const sim = (nA > 0 && nB > 0) ? (dot / (Math.sqrt(nA) * Math.sqrt(nB))) : 0;
+    const simPct = Math.round(Math.max(0, Math.min(100, ((sim + 1) / 2) * 100)));
+    // Опции для селекторов бойцов (из активных школ)
+    const optionsHtml = v2ActiveSchoolIndices.map(idx => {
+      const s = schools[idx];
+      return `<option value="${s.id}">${s.name_ru}</option>`;
+    }).join('');
+
+    fightersContainer.innerHTML = `
+      <div class="fighter-card fighter-a">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <span class="fighter-badge" style="background: rgba(0, 240, 255, 0.15); color: var(--accent-cyan); border: 1px solid var(--accent-cyan);">🔵 Школа А (Базовая)</span>
+          <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">${sA.period}</span>
         </div>
-        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">${sA.name_en}</div>
-        <p class="encyclo-card-desc">${sA.description}</p>
-        <div class="inspector-figures-title">Ключевые авторы:</div>
-        <div class="encyclo-figures-wrap" style="margin-bottom: 16px;">
-          ${sA.key_figures.map(fig => `<span class="figure-pill">${fig}</span>`).join('')}
+        <div class="arena-picker-wrap">
+          <select class="control-select arena-picker-select" id="arena-picker-a">${optionsHtml}</select>
         </div>
+        <div class="fighter-figures">👥 Мыслители: <strong>${(sA.key_figures || []).join(', ')}</strong></div>
+        <div class="fighter-credo">${sA.description}</div>
       </div>
 
-      <!-- Карточка Школы Б -->
-      <div class="dossier-card card-school-b">
-        <div class="encyclo-card-header">
-          <h3 class="encyclo-card-title" style="color: var(--accent-crimson);">🔴 ${sB.name_ru}</h3>
-          <span class="encyclo-card-period">${sB.period}</span>
-        </div>
-        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">${sB.name_en}</div>
-        <p class="encyclo-card-desc">${sB.description}</p>
-        <div class="inspector-figures-title">Ключевые авторы:</div>
-        <div class="encyclo-figures-wrap" style="margin-bottom: 16px;">
-          ${sB.key_figures.map(fig => `<span class="figure-pill">${fig}</span>`).join('')}
-        </div>
+      <div class="vs-badge-wrap">
+        <button class="vs-badge" id="btn-arena-swap" title="Поменять оппонентов местами (⇄)">⇄</button>
+        <div class="similarity-val-pill">Сходство: ${simPct}%</div>
       </div>
 
-      <!-- Анализ консенсуса и диссонанса -->
-      <div class="consensus-section">
-        <div class="consensus-grid">
-          <!-- Точки согласия -->
-          <div class="consensus-box">
-            <div class="consensus-box-title" style="color: var(--accent-emerald);">
-              <span>🤝 Точки доктринального согласия (${consensus.length})</span>
-            </div>
-            <div class="consensus-list">
-              ${consensus.length === 0 ? '<div style="font-size:12px; color:var(--text-muted);">Общих однозначных приоритетов не обнаружено</div>' : 
-                consensus.map(c => `
-                  <div class="consensus-item">
-                    <span>${c.factor.name_ru}</span>
-                    <span style="font-family: var(--font-mono); font-weight:700; color:var(--accent-emerald);">
-                      ${c.vA > 0 ? '+' : ''}${c.vA.toFixed(1)} / ${c.vB > 0 ? '+' : ''}${c.vB.toFixed(1)}
-                    </span>
-                  </div>
-                `).join('')
-              }
-            </div>
-          </div>
-
-          <!-- Точки непримиримого спора -->
-          <div class="consensus-box">
-            <div class="consensus-box-title" style="color: var(--accent-crimson);">
-              <span>⚔️ Точки фундаментального спора (${dissensus.length})</span>
-            </div>
-            <div class="consensus-list">
-              ${dissensus.map(d => `
-                <div class="consensus-item">
-                  <span>${d.factor.name_ru}</span>
-                  <span style="font-family: var(--font-mono); font-weight:700;">
-                    <span style="color: var(--accent-cyan);">${d.vA > 0 ? '+' : ''}${d.vA.toFixed(1)}</span> vs 
-                    <span style="color: var(--accent-crimson);">${d.vB > 0 ? '+' : ''}${d.vB.toFixed(1)}</span>
-                  </span>
-                </div>
-              `).join('')}
-            </div>
-          </div>
+      <div class="fighter-card fighter-b">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <span class="fighter-badge" style="background: rgba(239, 68, 68, 0.15); color: var(--accent-crimson); border: 1px solid var(--accent-crimson);">🔴 Школа Б (Оппонент)</span>
+          <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">${sB.period}</span>
         </div>
+        <div class="arena-picker-wrap">
+          <select class="control-select arena-picker-select" id="arena-picker-b">${optionsHtml}</select>
+        </div>
+        <div class="fighter-figures">👥 Мыслители: <strong>${(sB.key_figures || []).join(', ')}</strong></div>
+        <div class="fighter-credo">${sB.description}</div>
       </div>
     `;
-  }
 
-  function renderEncyclopediaCards(filterQuery = '') {
-    const container = document.getElementById('schools-cards-grid');
-    if (!container) return;
-    container.innerHTML = '';
+    const pickerA = document.getElementById('arena-picker-a');
+    const pickerB = document.getElementById('arena-picker-b');
+    const swapBtn = document.getElementById('btn-arena-swap');
 
-    schools.forEach(s => {
-      if (filterQuery) {
-        const match = s.name_ru.toLowerCase().includes(filterQuery) || s.name_en.toLowerCase().includes(filterQuery) || s.key_figures.some(f => f.toLowerCase().includes(filterQuery)) || s.description.toLowerCase().includes(filterQuery);
-        if (!match) return;
+    if (pickerA) {
+      pickerA.value = schoolAId;
+      pickerA.addEventListener('change', (e) => setGlobalSchools(e.target.value, null));
+    }
+    if (pickerB) {
+      pickerB.value = schoolBId;
+      pickerB.addEventListener('change', (e) => setGlobalSchools(null, e.target.value));
+    }
+    if (swapBtn) {
+      swapBtn.addEventListener('click', () => setGlobalSchools(schoolBId, schoolAId));
+    }
+
+    // Вычисляем совпадения и разногласия по активным факторам
+    const factorDiffs = v2ActiveFactorIndices.map(col => ({
+      factor: factors[col],
+      diff: Math.abs(matrix[sIdxA][col] - matrix[sIdxB][col]),
+      valA: matrix[sIdxA][col],
+      valB: matrix[sIdxB][col]
+    }));
+
+    factorDiffs.sort((a, b) => a.diff - b.diff);
+
+    // Консенсус (наименьшая разница)
+    const consensusPoints = factorDiffs.filter(d => d.diff <= 0.35).slice(0, 6);
+    // Конфликт (наибольшая разница)
+    const conflictPoints = [...factorDiffs].reverse().filter(d => d.diff >= 1.2).slice(0, 6);
+
+    const consensusContainer = document.getElementById('arena-consensus-points');
+    const conflictContainer = document.getElementById('arena-conflict-points');
+
+    if (consensusContainer) {
+      if (consensusPoints.length === 0) {
+        consensusContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 10px;">Прямых совпадений во взглядах практически нет.</div>';
+      } else {
+        consensusContainer.innerHTML = consensusPoints.map(p => `
+          <div class="point-card">
+            <span class="point-title">✓ ${p.factor.name_ru}</span>
+            <span class="point-scores-pill" style="color: var(--accent-emerald);">А: ${p.valA > 0 ? '+' : ''}${p.valA.toFixed(1)} | Б: ${p.valB > 0 ? '+' : ''}${p.valB.toFixed(1)}</span>
+          </div>
+        `).join('');
       }
+    }
 
-      const isA = s.id === schoolAId;
-      const isB = s.id === schoolBId;
-
-      const card = document.createElement('div');
-      card.className = 'encyclo-card';
-      if (isA) card.style.borderColor = 'var(--accent-cyan)';
-      if (isB) card.style.borderColor = 'var(--accent-crimson)';
-
-      card.innerHTML = `
-        <div class="encyclo-card-header">
-          <h3 class="encyclo-card-title" style="color: ${getSchoolColor(s.id)}">${isA ? '🔵 ' : (isB ? '🔴 ' : '')}${s.name_ru}</h3>
-          <span class="encyclo-card-period">${s.period}</span>
-        </div>
-        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">${s.name_en}</div>
-        <p class="encyclo-card-desc">${s.description}</p>
-        <div class="encyclo-figures-wrap" style="margin-bottom: 12px;">
-          ${s.key_figures.map(fig => `<span class="figure-pill">${fig}</span>`).join('')}
-        </div>
-        <div style="display:flex; gap:8px; margin-top:auto;">
-          <button class="duel-btn" style="flex:1;" onclick="window.EconMatrixSetA('${s.id}')">Выбрать как Школу А</button>
-          <button class="duel-btn" style="flex:1;" onclick="window.EconMatrixSetB('${s.id}')">Выбрать как Школу Б</button>
-        </div>
-      `;
-      container.appendChild(card);
-    });
-  }
-
-  function renderFactorCards(filterQuery = '') {
-    const container = document.getElementById('factors-cards-grid');
-    if (!container) return;
-    container.innerHTML = '';
-
-    factors.forEach((f, idx) => {
-      if (filterQuery) {
-        const match = f.name_ru.toLowerCase().includes(filterQuery) || f.category.toLowerCase().includes(filterQuery) || f.description.toLowerCase().includes(filterQuery);
-        if (!match) return;
+    if (conflictContainer) {
+      if (conflictPoints.length === 0) {
+        conflictContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 10px;">Радикальных противоречий не обнаружено (школы весьма близки).</div>';
+      } else {
+        conflictContainer.innerHTML = conflictPoints.map(p => `
+          <div class="point-card">
+            <span class="point-title">✗ ${p.factor.name_ru}</span>
+            <span class="point-scores-pill" style="color: var(--accent-crimson);">А: ${p.valA > 0 ? '+' : ''}${p.valA.toFixed(1)} vs Б: ${p.valB > 0 ? '+' : ''}${p.valB.toFixed(1)}</span>
+          </div>
+        `).join('');
       }
-
-      const isRemoved = removedIndicesSet.has(idx);
-
-      const card = document.createElement('div');
-      card.className = 'encyclo-card';
-      card.innerHTML = `
-        <div class="encyclo-card-header">
-          <h4 class="encyclo-card-title" style="font-size: 15px;">#${idx + 1}. ${f.name_ru}</h4>
-          ${isRemoved ? '<span class="badge-mini" style="background: rgba(239, 68, 68, 0.2); color: var(--accent-crimson);">Коллинеарен в M^T</span>' : ''}
-        </div>
-        <div style="font-size: 11px; color: var(--accent-cyan); margin-bottom: 8px;">${f.category}</div>
-        <p class="encyclo-card-desc">${f.description}</p>
-        ${isRemoved ? `<div style="font-size: 11.5px; color: var(--accent-crimson); margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border-subtle);">${COLLINEARITY_REASONS[f.id] || "Удален для оптимизации числа обусловленности."}</div>` : ''}
-      `;
-      container.appendChild(card);
-    });
+    }
   }
 
   // Глобальные хелперы для быстрых кликов из карточек
@@ -1943,9 +2862,77 @@
   window.EconMatrixSetB = function(id) { setGlobalSchools(null, id); };
 
   /* ─────────────────────────────────────────────────────────────────────────
+     PERFORMANCE MONITOR (REAL-TIME FPS & FRAME TIME HUD)
+  ───────────────────────────────────────────────────────────────────────── */
+  function initFpsMeter() {
+    const hud = document.getElementById('fps-meter-hud');
+    const valEl = document.getElementById('fps-counter-val');
+    const msEl = document.getElementById('fps-counter-ms');
+    const dotEl = document.getElementById('fps-indicator-dot');
+    if (!hud || !valEl || !msEl || !dotEl) return;
+
+    let lastFrameTime = performance.now();
+    let frameTimes = [];
+    const maxSamples = 24; // Скользящее окно на 24 кадра
+    let lastHudUpdate = 0;
+
+    hud.addEventListener('click', () => {
+      hud.classList.toggle('minimized');
+    });
+
+    function frameTick(now) {
+      const delta = now - lastFrameTime;
+      lastFrameTime = now;
+
+      // Игнорируем аномальные паузы (сворачивание вкладки, долгий blur)
+      if (delta > 0 && delta < 1000) {
+        frameTimes.push(delta);
+        if (frameTimes.length > maxSamples) {
+          frameTimes.shift();
+        }
+      } else {
+        frameTimes = [];
+      }
+
+      // Обновляем показания каждые 180 мс на основе скользящего среднего
+      if (now - lastHudUpdate >= 180 && frameTimes.length >= 4) {
+        lastHudUpdate = now;
+
+        const sum = frameTimes.reduce((a, b) => a + b, 0);
+        const avgDelta = sum / frameTimes.length;
+        const fps = Math.min(144, Math.round(1000 / avgDelta));
+        const frameMs = avgDelta.toFixed(1);
+
+        valEl.textContent = `${fps} FPS`;
+        msEl.textContent = `${frameMs} ms`;
+
+        if (fps >= 50) {
+          dotEl.style.backgroundColor = '#10b981';
+          dotEl.style.boxShadow = '0 0 8px #10b981';
+          valEl.style.color = '#10b981';
+        } else if (fps >= 30) {
+          dotEl.style.backgroundColor = '#f59e0b';
+          dotEl.style.boxShadow = '0 0 8px #f59e0b';
+          valEl.style.color = '#f59e0b';
+        } else {
+          dotEl.style.backgroundColor = '#ef4444';
+          dotEl.style.boxShadow = '0 0 8px #ef4444';
+          valEl.style.color = '#ef4444';
+        }
+      }
+
+      requestAnimationFrame(frameTick);
+    }
+
+    requestAnimationFrame(frameTick);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
      ГЛАВНЫЙ СТАРТ
   ───────────────────────────────────────────────────────────────────────── */
   window.addEventListener('DOMContentLoaded', () => {
+    initFpsMeter();
+    initVersionSwitcher();
     initGlobalComparisonBar();
     initTabs();
     initHeatmapControls();
@@ -1956,7 +2943,14 @@
     renderDifferences();
     renderSimilarityGauge();
     renderGenealogyTree();
-    initEncyclopedia();
+
+    // v2 Core Engine
+    initDualSvdReducer();
+    initCompass();
+    initArena();
+
+    // Финальная синхронизация контекстной видимости
+    updateContextualPanels();
   });
 
 })();
